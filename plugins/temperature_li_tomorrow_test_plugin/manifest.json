@@ -1,13 +1,14 @@
 {
-  "schema_version": 1,
+  "schema": "hivra.plugin.manifest",
+  "version": 1,
+  "release_version": "0.1.0",
   "plugin_id": "hivra.contract.temperature-li.tomorrow.v1",
-  "display_name": "Temperature Tomorrow Liechtenstein (Test Plugin)",
-  "version": "0.1.0",
-  "entry_method": "settle_temperature_tomorrow",
   "wasm_module": "hivra_temperature_li_tomorrow_test_plugin.wasm",
   "capabilities": [
-    "hivra.contract.temperature-li.tomorrow.v1"
+    "consensus_guard.read",
+    "oracle.read.temperature.li"
   ],
-  "description": "External test scaffold for deterministic tomorrow temperature settlement flow."
+  "contract": {
+    "kind": "temperature_tomorrow_liechtenstein"
+  }
 }
-

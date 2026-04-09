@@ -1,13 +1,11 @@
 {
-  "schema_version": 1,
+  "schema": "hivra.plugin.manifest",
+  "version": 1,
+  "release_version": "0.1.0",
   "plugin_id": "hivra.contract.capsule-chat.v1",
-  "display_name": "Capsule Chat (Test Plugin)",
-  "version": "0.1.0",
-  "entry_method": "post_capsule_chat_message",
   "wasm_module": "hivra_capsule_chat_test_plugin.wasm",
-  "capabilities": [
-    "hivra.contract.capsule-chat.v1"
-  ],
-  "description": "External test scaffold for deterministic capsule chat intent flow."
+  "capabilities": [],
+  "contract": {
+    "kind": "capsule_chat_intent"
+  }
 }
-

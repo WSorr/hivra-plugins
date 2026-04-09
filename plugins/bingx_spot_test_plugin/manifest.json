@@ -1,13 +1,14 @@
 {
-  "schema_version": 1,
+  "schema": "hivra.plugin.manifest",
+  "version": 1,
+  "release_version": "0.1.0",
   "plugin_id": "hivra.contract.bingx-trading.v1",
-  "display_name": "BingX Spot Trading (Test Plugin)",
-  "version": "0.1.0",
-  "entry_method": "place_bingx_spot_order_intent",
   "wasm_module": "hivra_bingx_spot_test_plugin.wasm",
   "capabilities": [
-    "hivra.contract.bingx-trading.v1"
+    "exchange.read.bingx.market",
+    "exchange.trade.bingx.spot"
   ],
-  "description": "External test scaffold for deterministic BingX spot order intent flow."
+  "contract": {
+    "kind": "bingx_spot_order_intent"
+  }
 }
-

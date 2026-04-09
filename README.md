@@ -14,6 +14,7 @@ Core app runtime, ledger, and host execution stay in the main Hivra repository.
 ## Layout
 
 - `contracts/`: versioned host API contracts consumed by plugins.
+- `catalog/`: source catalog consumed by Hivra app (`plugin_catalog.json`).
 - `plugins/`: plugin sources and per-plugin manifests.
 - `scripts/`: local build/packaging scripts.
 - `dist/plugins/`: generated plugin zip artifacts (`plugin/manifest.json` + `plugin/module.wasm`).
@@ -28,6 +29,12 @@ Core app runtime, ledger, and host execution stay in the main Hivra repository.
 ```
 
 3. Install produced zips into Hivra app from `dist/plugins/`.
+
+## Source Catalog
+
+`catalog/plugin_catalog.json` is the external source index for Hivra app.
+
+It lists plugin ids, versions, and downloadable zip URLs.
 
 ## Included test plugin scaffolds
 

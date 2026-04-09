@@ -24,7 +24,7 @@ fi
 
 WASM_MODULE="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["wasm_module"])' "$MANIFEST_PATH")"
 PLUGIN_ID="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["plugin_id"])' "$MANIFEST_PATH")"
-PLUGIN_VERSION="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$MANIFEST_PATH")"
+PLUGIN_VERSION="$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(d.get("release_version", d.get("version")))' "$MANIFEST_PATH")"
 
 echo "Building $PLUGIN_NAME ($PLUGIN_ID@$PLUGIN_VERSION)"
 
@@ -51,4 +51,3 @@ cp "$WASM_PATH" "$TMP_DIR/plugin/module.wasm"
 
 (cd "$TMP_DIR" && zip -qr "$OUT_DIR/$ZIP_NAME" plugin)
 echo "Built: $OUT_DIR/$ZIP_NAME"
-

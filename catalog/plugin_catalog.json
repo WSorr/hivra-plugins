@@ -1,0 +1,33 @@
+{
+  "schema": "hivra.plugin.catalog",
+  "version": 1,
+  "source_id": "wsorr.hivra.plugins",
+  "source_name": "WSorr Hivra Plugins",
+  "entries": [
+    {
+      "id": "bingx-spot-test",
+      "plugin_id": "hivra.contract.bingx-trading.v1",
+      "display_name": "BingX Spot Trading (Test Plugin)",
+      "version": "0.1.0",
+      "package_kind": "zip",
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/latest/download/bingx_spot_test_plugin-0.1.0.zip"
+    },
+    {
+      "id": "temperature-li-tomorrow-test",
+      "plugin_id": "hivra.contract.temperature-li.tomorrow.v1",
+      "display_name": "Temperature Tomorrow LI (Test Plugin)",
+      "version": "0.1.0",
+      "package_kind": "zip",
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/latest/download/temperature_li_tomorrow_test_plugin-0.1.0.zip"
+    },
+    {
+      "id": "capsule-chat-test",
+      "plugin_id": "hivra.contract.capsule-chat.v1",
+      "display_name": "Capsule Chat (Test Plugin)",
+      "version": "0.1.0",
+      "package_kind": "zip",
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/latest/download/capsule_chat_test_plugin-0.1.0.zip"
+    }
+  ]
+}
+
