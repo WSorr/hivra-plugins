@@ -1,0 +1,4 @@
+target/
+dist/plugins/*.zip
+.tmp/
+.DS_Store

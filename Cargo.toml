@@ -1,0 +1,10 @@
+[workspace]
+members = [
+  "plugins/bingx_spot_test_plugin",
+]
+resolver = "2"
+
+[profile.release]
+lto = true
+opt-level = "z"
+codegen-units = 1
