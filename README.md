@@ -14,6 +14,7 @@ Core app runtime, ledger, and host execution stay in the main Hivra repository.
 ## Layout
 
 - `contracts/`: versioned host API contracts consumed by plugins.
+- `contracts/hivra_contract_profile_v1.md`: shared contract standard (determinism, capabilities, fail-closed validation).
 - `catalog/`: source catalog consumed by Hivra app (`plugin_catalog.json`).
 - `plugins/`: plugin sources and per-plugin manifests.
 - `scripts/`: local build/packaging scripts.

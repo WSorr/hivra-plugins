@@ -5,6 +5,9 @@ Canonical host contract currently used by Hivra plugin integration.
 Source of truth for runtime behavior remains main Hivra repository. This copy is
 kept here so plugin development/release can be versioned independently.
 
+Contract design/profile baseline is defined in:
+- `contracts/hivra_contract_profile_v1.md`
+
 ## Scope
 
 - No wasm bytecode execution.
@@ -65,4 +68,3 @@ kept here so plugin development/release can be versioned independently.
 - `unsupported_plugin`
 - `unsupported_method`
 - `invalid_args`
-
