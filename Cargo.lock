@@ -5,3 +5,11 @@ version = 4
 [[package]]
 name = "hivra_bingx_spot_test_plugin"
 version = "0.1.0"
+
+[[package]]
+name = "hivra_capsule_chat_test_plugin"
+version = "0.1.0"
+
+[[package]]
+name = "hivra_temperature_li_tomorrow_test_plugin"
+version = "0.1.0"

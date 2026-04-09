@@ -29,9 +29,8 @@ Core app runtime, ledger, and host execution stay in the main Hivra repository.
 
 3. Install produced zips into Hivra app from `dist/plugins/`.
 
-## First plugin included
+## Included test plugin scaffolds
 
-- `hivra.contract.bingx-trading.v1` test package scaffold
-  - deterministic/stub wasm module
-  - package manifest for Hivra plugin installer
-
+- `hivra.contract.bingx-trading.v1`
+- `hivra.contract.temperature-li.tomorrow.v1`
+- `hivra.contract.capsule-chat.v1`
