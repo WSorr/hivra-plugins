@@ -108,14 +108,17 @@ pub extern "C" fn hivra_temperature_li_tomorrow_eval_outcome(
     }
 }
 
-pub fn evaluate_from_json(raw_json: &str) -> Result<TemperatureSettlementOutput, TemperatureContractError> {
-    let input: TemperatureSettlementInput = serde_json::from_str(raw_json).map_err(|error| {
-        TemperatureContractError(format!("invalid_json: {error}"))
-    })?;
+pub fn evaluate_from_json(
+    raw_json: &str,
+) -> Result<TemperatureSettlementOutput, TemperatureContractError> {
+    let input: TemperatureSettlementInput = serde_json::from_str(raw_json)
+        .map_err(|error| TemperatureContractError(format!("invalid_json: {error}")))?;
     evaluate(input)
 }
 
-pub fn evaluate(input: TemperatureSettlementInput) -> Result<TemperatureSettlementOutput, TemperatureContractError> {
+pub fn evaluate(
+    input: TemperatureSettlementInput,
+) -> Result<TemperatureSettlementOutput, TemperatureContractError> {
     validate_input(&input)?;
 
     let normalized_location = input.location_code.trim().to_uppercase();

@@ -7,4 +7,3 @@ pub extern "C" fn hivra_plugin_abi_version() -> u32 {
 pub extern "C" fn hivra_plugin_contract_id() -> u32 {
     3
 }
-
