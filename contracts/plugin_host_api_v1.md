@@ -17,8 +17,6 @@ Contract design/profile baseline is defined in:
 
 ## Supported Contracts (v1)
 
-- `hivra.contract.temperature-li.tomorrow.v1`
-  - method: `settle_temperature_tomorrow`
 - `hivra.contract.bingx-trading.v1`
   - method: `place_bingx_spot_order_intent`
 - `hivra.contract.capsule-chat.v1`

@@ -40,5 +40,4 @@ It lists plugin ids, versions, and downloadable zip URLs.
 ## Included test plugin scaffolds
 
 - `hivra.contract.bingx-trading.v1`
-- `hivra.contract.temperature-li.tomorrow.v1`
 - `hivra.contract.capsule-chat.v1`
