@@ -1,6 +1,6 @@
 [workspace]
 members = [
-  "plugins/bingx_spot_test_plugin",
+  "plugins/bingx_futures_test_plugin",
   "plugins/capsule_chat_test_plugin",
 ]
 resolver = "2"

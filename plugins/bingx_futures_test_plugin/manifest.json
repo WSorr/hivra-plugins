@@ -1,0 +1,14 @@
+{
+  "schema": "hivra.plugin.manifest",
+  "version": 1,
+  "release_version": "0.1.0",
+  "plugin_id": "hivra.contract.bingx-futures-trading.v1",
+  "wasm_module": "hivra_bingx_futures_test_plugin.wasm",
+  "capabilities": [
+    "exchange.read.bingx.market",
+    "exchange.trade.bingx.futures"
+  ],
+  "contract": {
+    "kind": "bingx_futures_order_intent"
+  }
+}

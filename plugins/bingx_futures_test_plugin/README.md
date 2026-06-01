@@ -1,13 +1,13 @@
-# BingX Spot Test Plugin
+# BingX Futures Test Plugin
 
 External deterministic contract plugin for:
 
-- `plugin_id`: `hivra.contract.bingx-trading.v1`
-- `method`: `place_bingx_spot_order_intent`
+- `plugin_id`: `hivra.contract.bingx-futures-trading.v1`
+- `method`: `place_bingx_futures_order_intent`
 
 ## Behavior
 
-- validates and normalizes spot order intent parameters
+- validates and normalizes futures order intent parameters
 - supports `entry_mode=direct` and `entry_mode=zone_pending`
 - produces canonical JSON + SHA-256 `intent_hash_hex`
 - no live order execution in this repository

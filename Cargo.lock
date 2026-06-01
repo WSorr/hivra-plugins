@@ -63,7 +63,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "hivra_bingx_spot_test_plugin"
+name = "hivra_bingx_futures_test_plugin"
 version = "0.1.0"
 dependencies = [
  "num-bigint",

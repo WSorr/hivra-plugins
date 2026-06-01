@@ -2,8 +2,8 @@ use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-const PLUGIN_ID: &str = "hivra.contract.bingx-trading.v1";
-const CONTRACT_KIND: &str = "bingx_spot_order_intent";
+const PLUGIN_ID: &str = "hivra.contract.bingx-futures-trading.v1";
+const CONTRACT_KIND: &str = "bingx_futures_order_intent";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

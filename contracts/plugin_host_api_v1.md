@@ -17,8 +17,8 @@ Contract design/profile baseline is defined in:
 
 ## Supported Contracts (v1)
 
-- `hivra.contract.bingx-trading.v1`
-  - method: `place_bingx_spot_order_intent`
+- `hivra.contract.bingx-futures-trading.v1`
+  - method: `place_bingx_futures_order_intent`
 - `hivra.contract.capsule-chat.v1`
   - method: `post_capsule_chat_message`
 
@@ -27,8 +27,8 @@ Contract design/profile baseline is defined in:
 ```json
 {
   "schema_version": 1,
-  "plugin_id": "hivra.contract.bingx-trading.v1",
-  "method": "place_bingx_spot_order_intent",
+  "plugin_id": "hivra.contract.bingx-futures-trading.v1",
+  "method": "place_bingx_futures_order_intent",
   "args": {
     "peer_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "client_order_id": "ord-zone-1",
