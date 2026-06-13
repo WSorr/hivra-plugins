@@ -1,7 +1,7 @@
 {
   "schema": "hivra.plugin.manifest",
   "version": 1,
-  "release_version": "0.1.0",
+  "release_version": "0.1.1",
   "plugin_id": "hivra.contract.capsule-chat.v1",
   "wasm_module": "hivra_capsule_chat_test_plugin.wasm",
   "capabilities": [
