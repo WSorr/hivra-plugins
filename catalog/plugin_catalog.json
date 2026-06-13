@@ -11,7 +11,7 @@
       "version": "0.1.1",
       "package_kind": "zip",
       "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.1.1-plugins/bingx_futures_test_plugin-0.1.1.zip",
-      "sha256_hex": "6e7b19773fc7911e2ee972a9f48e43b7655811c330f05cc22e34a383254c282b"
+      "sha256_hex": "ef4c22bfcad7207955093bd5ba4693ada38b3fe4694bda66f3f3f4e834e5a87c"
     },
     {
       "id": "capsule-chat-test",
@@ -20,7 +20,7 @@
       "version": "0.1.1",
       "package_kind": "zip",
       "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.1.1-plugins/capsule_chat_test_plugin-0.1.1.zip",
-      "sha256_hex": "d31dc270bb30958a5879ede7c53816eeba7a03364831ec58d8c80a4494468f25"
+      "sha256_hex": "639643ecb453f97fa267467aadec22a5c903fd4d6fb0ddc13838ce86d25c0358"
     }
   ]
 }
