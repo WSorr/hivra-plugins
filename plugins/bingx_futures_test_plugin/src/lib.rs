@@ -129,6 +129,9 @@ pub extern "C" fn hivra_plugin_contract_id() -> u32 {
 }
 
 #[no_mangle]
+pub extern "C" fn hivra_entry_v1() {}
+
+#[no_mangle]
 pub extern "C" fn hivra_bingx_parse_side_code(raw_side_code: u32) -> u32 {
     match raw_side_code {
         0 => 0,
@@ -754,7 +757,7 @@ mod tests {
         let result = evaluate(sample_input()).expect("evaluation should pass");
         assert_eq!(
             result.intent_hash_hex,
-            "40ae3cab741eb177ac422091498c7f5ecfc86e4eb9c8170a548c04c4b244b29f"
+            "807eea78d592d7e292317f85940ffaf7c78eccbb1a5bf67ce5cd8dc01e0209bb"
         );
     }
 }

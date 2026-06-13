@@ -40,14 +40,11 @@ if [[ ! -f "$WASM_PATH" ]]; then
 fi
 
 OUT_DIR="$ROOT_DIR/dist/plugins"
-TMP_DIR="$ROOT_DIR/.tmp/$PLUGIN_NAME"
 ZIP_NAME="${PLUGIN_NAME}-${PLUGIN_VERSION}.zip"
 
-rm -rf "$TMP_DIR"
-mkdir -p "$TMP_DIR/plugin" "$OUT_DIR"
-
-cp "$MANIFEST_PATH" "$TMP_DIR/plugin/manifest.json"
-cp "$WASM_PATH" "$TMP_DIR/plugin/module.wasm"
-
-(cd "$TMP_DIR" && zip -qr "$OUT_DIR/$ZIP_NAME" plugin)
+mkdir -p "$OUT_DIR"
+python3 "$ROOT_DIR/scripts/package_plugin.py" \
+  "$MANIFEST_PATH" \
+  "$WASM_PATH" \
+  "$OUT_DIR/$ZIP_NAME"
 echo "Built: $OUT_DIR/$ZIP_NAME"

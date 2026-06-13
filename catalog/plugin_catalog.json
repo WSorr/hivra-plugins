@@ -1,6 +1,6 @@
 {
   "schema": "hivra.plugin.catalog",
-  "version": 1,
+  "version": 2,
   "source_id": "wsorr.hivra.plugins",
   "source_name": "WSorr Hivra Plugins",
   "entries": [
@@ -10,7 +10,8 @@
       "display_name": "BingX Futures Trading (Test Plugin)",
       "version": "0.1.0",
       "package_kind": "zip",
-      "download_url": "https://github.com/WSorr/hivra-plugins/releases/latest/download/bingx_futures_test_plugin-0.1.0.zip"
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.1.0-plugins/bingx_futures_test_plugin-0.1.0.zip",
+      "sha256_hex": "ace5e920265a6067d22e2f9269a7d9cd8f9f4e506d4cdf600a8029b686bd1141"
     },
     {
       "id": "capsule-chat-test",
@@ -18,7 +19,8 @@
       "display_name": "Capsule Chat (Test Plugin)",
       "version": "0.1.0",
       "package_kind": "zip",
-      "download_url": "https://github.com/WSorr/hivra-plugins/releases/latest/download/capsule_chat_test_plugin-0.1.0.zip"
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.1.0-plugins/capsule_chat_test_plugin-0.1.0.zip",
+      "sha256_hex": "112842f5475bd830f3c3ad47915a394a631d6a143142d2d714e702b61376c60c"
     }
   ]
 }

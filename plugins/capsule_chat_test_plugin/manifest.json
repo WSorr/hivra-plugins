@@ -4,8 +4,15 @@
   "release_version": "0.1.0",
   "plugin_id": "hivra.contract.capsule-chat.v1",
   "wasm_module": "hivra_capsule_chat_test_plugin.wasm",
-  "capabilities": [],
+  "capabilities": [
+    "consensus_guard.read"
+  ],
   "contract": {
-    "kind": "capsule_chat_intent"
+    "kind": "capsule_chat"
+  },
+  "runtime": {
+    "abi": "hivra_host_abi_v1",
+    "entry_export": "hivra_entry_v1",
+    "module_path": "plugin/module.wasm"
   }
 }

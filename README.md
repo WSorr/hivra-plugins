@@ -37,6 +37,22 @@ Core app runtime, ledger, and host execution stay in the main Hivra repository.
 
 It lists plugin ids, versions, and downloadable zip URLs.
 
+Published catalog entries use schema version 2 and must pin a release tag with
+an exact `sha256_hex`. Validate the catalog before release:
+
+```bash
+python3 scripts/validate_catalog.py
+```
+
+Run the complete repository review:
+
+```bash
+./scripts/review_all.sh
+```
+
+Plugin archives are packaged with fixed metadata and stable entry ordering, so
+identical manifest and WASM bytes produce an identical SHA-256 digest.
+
 ## Included test plugin scaffolds
 
 - `hivra.contract.bingx-futures-trading.v1`
