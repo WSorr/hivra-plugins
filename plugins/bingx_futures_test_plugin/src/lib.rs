@@ -4,6 +4,10 @@ use sha2::{Digest, Sha256};
 
 const PLUGIN_ID: &str = "hivra.contract.bingx-futures-trading.v1";
 const CONTRACT_KIND: &str = "bingx_futures_order_intent";
+const ABI_SCHEMA_VERSION: u32 = 1;
+const MAX_ABI_INPUT_BYTES: usize = 64 * 1024;
+#[cfg(target_arch = "wasm32")]
+const MAX_ABI_OUTPUT_BYTES: usize = 128 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -107,6 +111,15 @@ pub struct BingxIntentOutput {
     pub intent_hash_hex: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct AbiEnvelope {
+    schema_version: u32,
+    status: String,
+    result: Option<BingxIntentOutput>,
+    error_code: Option<String>,
+    error_message: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BingxContractError(pub String);
 
@@ -120,7 +133,7 @@ impl std::error::Error for BingxContractError {}
 
 #[no_mangle]
 pub extern "C" fn hivra_plugin_abi_version() -> u32 {
-    1
+    2
 }
 
 #[no_mangle]
@@ -128,8 +141,55 @@ pub extern "C" fn hivra_plugin_contract_id() -> u32 {
     1
 }
 
+#[cfg(target_arch = "wasm32")]
 #[no_mangle]
-pub extern "C" fn hivra_entry_v1() {}
+pub extern "C" fn hivra_alloc_v1(len: u32) -> u32 {
+    if len == 0 || len as usize > MAX_ABI_INPUT_BYTES {
+        return 0;
+    }
+    let mut bytes = Vec::<u8>::with_capacity(len as usize);
+    let ptr = bytes.as_mut_ptr();
+    std::mem::forget(bytes);
+    ptr as u32
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn hivra_dealloc_v1(ptr: u32, len: u32) {
+    if ptr == 0 || len == 0 {
+        return;
+    }
+    let _ = Vec::from_raw_parts(ptr as *mut u8, 0, len as usize);
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn hivra_evaluate_v1(ptr: u32, len: u32) -> u64 {
+    if ptr == 0 || len == 0 || len as usize > MAX_ABI_INPUT_BYTES {
+        return write_abi_output(rejected_abi_json(
+            "invalid_abi_input",
+            "ABI input must be non-empty and within the size limit",
+        ));
+    }
+    let input = std::slice::from_raw_parts(ptr as *const u8, len as usize);
+    let output = match std::str::from_utf8(input) {
+        Ok(raw_json) => evaluate_abi_json(raw_json),
+        Err(_) => rejected_abi_json("invalid_utf8", "ABI input must be UTF-8 JSON"),
+    };
+    write_abi_output(output)
+}
+
+#[cfg(target_arch = "wasm32")]
+unsafe fn write_abi_output(output: Vec<u8>) -> u64 {
+    if output.is_empty() || output.len() > MAX_ABI_OUTPUT_BYTES {
+        return 0;
+    }
+    let mut output = output.into_boxed_slice();
+    let ptr = output.as_mut_ptr() as u32;
+    let len = output.len() as u32;
+    std::mem::forget(output);
+    ((ptr as u64) << 32) | len as u64
+}
 
 #[no_mangle]
 pub extern "C" fn hivra_bingx_parse_side_code(raw_side_code: u32) -> u32 {
@@ -144,6 +204,48 @@ pub fn evaluate_from_json(raw_json: &str) -> Result<BingxIntentOutput, BingxCont
     let input: BingxIntentInput = serde_json::from_str(raw_json)
         .map_err(|error| BingxContractError(format!("invalid_json: {error}")))?;
     evaluate(input)
+}
+
+pub fn evaluate_abi_json(raw_json: &str) -> Vec<u8> {
+    if raw_json.len() > MAX_ABI_INPUT_BYTES {
+        return rejected_abi_json(
+            "input_too_large",
+            "ABI input exceeds the size limit",
+        );
+    }
+    let envelope = match evaluate_from_json(raw_json) {
+        Ok(result) => AbiEnvelope {
+            schema_version: ABI_SCHEMA_VERSION,
+            status: "executed".to_string(),
+            result: Some(result),
+            error_code: None,
+            error_message: None,
+        },
+        Err(error) => AbiEnvelope {
+            schema_version: ABI_SCHEMA_VERSION,
+            status: "rejected".to_string(),
+            result: None,
+            error_code: Some("invalid_args".to_string()),
+            error_message: Some(error.to_string()),
+        },
+    };
+    serde_json::to_vec(&envelope).unwrap_or_else(|_| {
+        rejected_abi_json(
+            "output_serialize_failed",
+            "Failed to serialize ABI output",
+        )
+    })
+}
+
+fn rejected_abi_json(code: &str, message: &str) -> Vec<u8> {
+    serde_json::to_vec(&AbiEnvelope {
+        schema_version: ABI_SCHEMA_VERSION,
+        status: "rejected".to_string(),
+        result: None,
+        error_code: Some(code.to_string()),
+        error_message: Some(message.to_string()),
+    })
+    .unwrap_or_default()
 }
 
 pub fn evaluate(input: BingxIntentInput) -> Result<BingxIntentOutput, BingxContractError> {
@@ -703,6 +805,31 @@ mod tests {
         assert_eq!(first.canonical_json, second.canonical_json);
         assert_eq!(first.intent_hash_hex, second.intent_hash_hex);
         assert_eq!(first.limit_price_decimal.as_deref(), Some("60000"));
+    }
+
+    #[test]
+    fn abi_envelope_is_deterministic_and_contains_semantic_result() {
+        let raw = serde_json::to_string(&sample_input()).expect("input serializes");
+        let first = evaluate_abi_json(&raw);
+        let second = evaluate_abi_json(&raw);
+        assert_eq!(first, second);
+
+        let envelope: AbiEnvelope =
+            serde_json::from_slice(&first).expect("ABI envelope parses");
+        assert_eq!(envelope.schema_version, ABI_SCHEMA_VERSION);
+        assert_eq!(envelope.status, "executed");
+        let result = envelope.result.expect("semantic result exists");
+        assert_eq!(result.limit_price_decimal.as_deref(), Some("60000"));
+        assert_eq!(result.intent_hash_hex.len(), 64);
+    }
+
+    #[test]
+    fn abi_envelope_rejects_invalid_input_without_trapping() {
+        let envelope: AbiEnvelope = serde_json::from_slice(&evaluate_abi_json("{}"))
+            .expect("ABI rejection parses");
+        assert_eq!(envelope.status, "rejected");
+        assert_eq!(envelope.error_code.as_deref(), Some("invalid_args"));
+        assert!(envelope.result.is_none());
     }
 
     #[test]

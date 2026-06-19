@@ -64,7 +64,7 @@ dependencies = [
 
 [[package]]
 name = "hivra_bingx_futures_test_plugin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "num-bigint",
  "serde",
@@ -74,7 +74,12 @@ dependencies = [
 
 [[package]]
 name = "hivra_capsule_chat_test_plugin"
-version = "0.1.0"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+]
 
 [[package]]
 name = "itoa"

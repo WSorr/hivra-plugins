@@ -1,7 +1,7 @@
 {
   "schema": "hivra.plugin.manifest",
   "version": 1,
-  "release_version": "0.1.1",
+  "release_version": "0.2.0",
   "plugin_id": "hivra.contract.capsule-chat.v1",
   "wasm_module": "hivra_capsule_chat_test_plugin.wasm",
   "capabilities": [
@@ -11,8 +11,8 @@
     "kind": "capsule_chat"
   },
   "runtime": {
-    "abi": "hivra_host_abi_v1",
-    "entry_export": "hivra_entry_v1",
+    "abi": "hivra_host_abi_v2",
+    "entry_export": "hivra_evaluate_v1",
     "module_path": "plugin/module.wasm"
   }
 }

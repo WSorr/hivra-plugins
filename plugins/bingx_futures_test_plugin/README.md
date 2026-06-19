@@ -21,11 +21,14 @@ External deterministic contract plugin for:
 
 ## ABI exports
 
-- `hivra_plugin_abi_version() -> u32`
+- `hivra_plugin_abi_version() -> u32` returns `2`
 - `hivra_plugin_contract_id() -> u32`
-- `hivra_bingx_parse_side_code(...) -> u32`
+- `hivra_alloc_v1(len) -> ptr`
+- `hivra_evaluate_v1(ptr, len) -> (output_ptr << 32 | output_len)`
+- `hivra_dealloc_v1(ptr, len)`
 
 Rust API:
 
 - `evaluate(...)`
 - `evaluate_from_json(...)`
+- `evaluate_abi_json(...)`

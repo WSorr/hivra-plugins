@@ -51,10 +51,10 @@ for plugin_dir in plugin_dirs:
         fail(f"{plugin_dir.name}: contract.kind is required")
 
     runtime = manifest.get("runtime", {})
-    if runtime.get("abi") != "hivra_host_abi_v1":
-        fail(f"{plugin_dir.name}: runtime.abi must be hivra_host_abi_v1")
-    if runtime.get("entry_export") != "hivra_entry_v1":
-        fail(f"{plugin_dir.name}: runtime.entry_export must be hivra_entry_v1")
+    if runtime.get("abi") != "hivra_host_abi_v2":
+        fail(f"{plugin_dir.name}: runtime.abi must be hivra_host_abi_v2")
+    if runtime.get("entry_export") != "hivra_evaluate_v1":
+        fail(f"{plugin_dir.name}: runtime.entry_export must be hivra_evaluate_v1")
     if runtime.get("module_path") != "plugin/module.wasm":
         fail(f"{plugin_dir.name}: runtime.module_path must be plugin/module.wasm")
 
@@ -68,7 +68,13 @@ for plugin_dir in plugin_dirs:
     source = source_path.read_text(encoding="utf-8")
     if plugin_id not in source:
         fail(f"{plugin_dir.name}: source plugin identity differs from manifest")
-    if "hivra_plugin_abi_version" not in source or "hivra_entry_v1" not in source:
-        fail(f"{plugin_dir.name}: required ABI exports are missing")
+    required_exports = (
+        "hivra_plugin_abi_version",
+        "hivra_alloc_v1",
+        "hivra_evaluate_v1",
+        "hivra_dealloc_v1",
+    )
+    if any(export not in source for export in required_exports):
+        fail(f"{plugin_dir.name}: required ABI v2 exports are missing")
 
 print(f"plugin validation passed: {len(plugin_dirs)} plugins")
