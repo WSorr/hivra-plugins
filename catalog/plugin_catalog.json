@@ -8,19 +8,19 @@
       "id": "bingx-futures-test",
       "plugin_id": "hivra.contract.bingx-futures-trading.v1",
       "display_name": "BingX Futures Trading (Test Plugin)",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "package_kind": "zip",
-      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.0-plugins/bingx_futures_test_plugin-0.2.0.zip",
-      "sha256_hex": "aae1823278533de5c139759eb480a0047b50c3663c026ffbd1fb31bdc30360b1"
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.1-plugins/bingx_futures_test_plugin-0.2.1.zip",
+      "sha256_hex": "b06f5e65872ad7eb6b8cf35bb1bd67dddc525d76c5a6007c5a74638aa3e9da24"
     },
     {
       "id": "capsule-chat-test",
       "plugin_id": "hivra.contract.capsule-chat.v1",
       "display_name": "Capsule Chat (Test Plugin)",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "package_kind": "zip",
-      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.0-plugins/capsule_chat_test_plugin-0.2.0.zip",
-      "sha256_hex": "80da3f7956233b43edea728d40795f3050f2338a5bc01920c32dd65768a97d64"
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.1-plugins/capsule_chat_test_plugin-0.2.1.zip",
+      "sha256_hex": "d1100a46212b501dba3b6952b323b36aff561756c98e9745110de21cfc19ef23"
     }
   ]
 }
