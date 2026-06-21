@@ -3,14 +3,20 @@
 External deterministic contract plugin for:
 
 - `plugin_id`: `hivra.contract.bingx-futures-trading.v1`
-- `method`: `place_bingx_futures_order_intent`
+- methods:
+  - `place_bingx_futures_order_intent`
+  - `rank_bingx_futures_signals`
 
 ## Behavior
 
 - validates and normalizes futures order intent parameters
 - supports `entry_mode=direct` and `entry_mode=zone_pending`
 - produces canonical JSON + SHA-256 `intent_hash_hex`
+- ranks precomputed live-decision summaries into deterministic signal buckets
+  (`ready`, `near`, `blocked`, `no_signal`, `error`)
+- produces canonical JSON + SHA-256 `scan_hash_hex` for signal ranking output
 - no live order execution in this repository
+- no market-data fetching in this repository
 
 ## Determinism
 
@@ -18,6 +24,9 @@ External deterministic contract plugin for:
 - no randomness
 - no local-time derived fields in evaluation
 - same input => byte-identical canonical JSON and hash
+
+Signal ranking is intentionally pure: host/runtime owns exchange reads and TVH
+snapshot construction, then passes deterministic summaries to this plugin.
 
 ## ABI exports
 

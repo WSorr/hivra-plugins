@@ -64,7 +64,7 @@ dependencies = [
 
 [[package]]
 name = "hivra_bingx_futures_test_plugin"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "num-bigint",
  "serde",

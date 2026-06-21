@@ -19,6 +19,7 @@ Contract design/profile baseline is defined in:
 
 - `hivra.contract.bingx-futures-trading.v1`
   - method: `place_bingx_futures_order_intent`
+  - method: `rank_bingx_futures_signals`
 - `hivra.contract.capsule-chat.v1`
   - method: `post_capsule_chat_message`
 
@@ -59,6 +60,80 @@ Contract design/profile baseline is defined in:
 - `error_code`/`error_message`: present for `rejected`
 - `canonical_json` + `response_hash_hex`:
   - deterministic for identical request + runtime inputs
+
+## BingX Futures Signal Ranking
+
+`rank_bingx_futures_signals` ranks precomputed live-decision summaries. The
+plugin does not fetch market data and does not place orders. Host/runtime must
+provide deterministic candidate summaries produced from the current TVH/live
+decision pipeline.
+
+Request:
+
+```json
+{
+  "schema_version": 1,
+  "plugin_id": "hivra.contract.bingx-futures-trading.v1",
+  "method": "rank_bingx_futures_signals",
+  "args": {
+    "schema_version": 1,
+    "plugin_id": "hivra.contract.bingx-futures-trading.v1",
+    "candidates": [
+      {
+        "symbol": "SOL-USDT",
+        "can_prepare_intent": true,
+        "decision": "short",
+        "side": "sell",
+        "zone_low_decimal": "89",
+        "zone_high_decimal": "91",
+        "trend_gate_code": "ok",
+        "zone_anchor_source": "liquidation",
+        "zone_anchor_executable": true,
+        "zone_anchor_lifecycle": "fresh",
+        "trend_4h": "bear",
+        "trend_1d": "bear",
+        "live_decision_hash_hex": "2222222222222222222222222222222222222222222222222222222222222222",
+        "failed_reason_codes": []
+      }
+    ]
+  }
+}
+```
+
+Response result:
+
+```json
+{
+  "entries": [
+    {
+      "symbol": "SOL-USDT",
+      "bucket": "ready",
+      "score": 10800,
+      "decision": "short",
+      "side": "sell",
+      "zone_low_decimal": "89",
+      "zone_high_decimal": "91",
+      "trend_gate_code": "ok",
+      "can_prepare_intent": true,
+      "live_decision_hash_hex": "2222222222222222222222222222222222222222222222222222222222222222",
+      "failed_reason_codes": []
+    }
+  ],
+  "canonical_json": "...",
+  "scan_hash_hex": "64 lowercase hex chars"
+}
+```
+
+Ranking buckets are ordered:
+
+1. `ready`
+2. `near`
+3. `blocked`
+4. `no_signal`
+5. `error`
+
+Within a bucket, entries are sorted by deterministic score descending, then by
+symbol ascending.
 
 ## Error Codes
 

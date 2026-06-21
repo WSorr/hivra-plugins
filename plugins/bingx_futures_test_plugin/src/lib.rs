@@ -1,9 +1,13 @@
 use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 const PLUGIN_ID: &str = "hivra.contract.bingx-futures-trading.v1";
 const CONTRACT_KIND: &str = "bingx_futures_order_intent";
+const SIGNAL_SCAN_CONTRACT_KIND: &str = "bingx_futures_signal_scan_rank";
+const PLACE_ORDER_INTENT_METHOD: &str = "place_bingx_futures_order_intent";
+const RANK_SIGNALS_METHOD: &str = "rank_bingx_futures_signals";
 const ABI_SCHEMA_VERSION: u32 = 1;
 const MAX_ABI_INPUT_BYTES: usize = 64 * 1024;
 #[cfg(target_arch = "wasm32")]
@@ -112,12 +116,85 @@ pub struct BingxIntentOutput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BingxSignalScanInput {
+    pub schema_version: u32,
+    pub plugin_id: String,
+    pub candidates: Vec<BingxSignalScanCandidate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BingxSignalScanCandidate {
+    pub symbol: String,
+    pub can_prepare_intent: bool,
+    pub decision: String,
+    pub side: Option<String>,
+    pub zone_low_decimal: Option<String>,
+    pub zone_high_decimal: Option<String>,
+    pub trend_gate_code: Option<String>,
+    pub zone_anchor_source: Option<String>,
+    pub zone_anchor_executable: Option<bool>,
+    pub zone_anchor_lifecycle: Option<String>,
+    pub trend_4h: Option<String>,
+    pub trend_1d: Option<String>,
+    pub live_decision_hash_hex: Option<String>,
+    pub failed_reason_codes: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SignalScanBucket {
+    Error,
+    NoSignal,
+    Blocked,
+    Near,
+    Ready,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BingxSignalScanEntry {
+    pub symbol: String,
+    pub bucket: SignalScanBucket,
+    pub score: i32,
+    pub decision: String,
+    pub side: Option<String>,
+    pub zone_low_decimal: Option<String>,
+    pub zone_high_decimal: Option<String>,
+    pub trend_gate_code: String,
+    pub can_prepare_intent: bool,
+    pub live_decision_hash_hex: Option<String>,
+    pub failed_reason_codes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct CanonicalSignalScan {
+    schema_version: u32,
+    plugin_id: String,
+    contract_kind: String,
+    entries: Vec<BingxSignalScanEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BingxSignalScanOutput {
+    pub entries: Vec<BingxSignalScanEntry>,
+    pub canonical_json: String,
+    pub scan_hash_hex: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct AbiEnvelope {
     schema_version: u32,
     status: String,
-    result: Option<BingxIntentOutput>,
+    result: Option<Value>,
     error_code: Option<String>,
     error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct AbiRequestEnvelope {
+    schema_version: u32,
+    plugin_id: String,
+    method: String,
+    args: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,44 +285,108 @@ pub fn evaluate_from_json(raw_json: &str) -> Result<BingxIntentOutput, BingxCont
 
 pub fn evaluate_abi_json(raw_json: &str) -> Vec<u8> {
     if raw_json.len() > MAX_ABI_INPUT_BYTES {
-        return rejected_abi_json(
-            "input_too_large",
-            "ABI input exceeds the size limit",
-        );
+        return rejected_abi_json("input_too_large", "ABI input exceeds the size limit");
     }
-    let envelope = match evaluate_from_json(raw_json) {
-        Ok(result) => AbiEnvelope {
-            schema_version: ABI_SCHEMA_VERSION,
-            status: "executed".to_string(),
-            result: Some(result),
-            error_code: None,
-            error_message: None,
+
+    let envelope = match serde_json::from_str::<Value>(raw_json) {
+        Ok(value) => match parse_abi_request_envelope(value.clone()) {
+            Some(request) => evaluate_abi_request(request),
+            None => evaluate_flat_abi_value(value),
         },
-        Err(error) => AbiEnvelope {
-            schema_version: ABI_SCHEMA_VERSION,
-            status: "rejected".to_string(),
-            result: None,
-            error_code: Some("invalid_args".to_string()),
-            error_message: Some(error.to_string()),
-        },
+        Err(error) => rejected_abi_envelope("invalid_json", &error.to_string()),
     };
     serde_json::to_vec(&envelope).unwrap_or_else(|_| {
-        rejected_abi_json(
-            "output_serialize_failed",
-            "Failed to serialize ABI output",
-        )
+        rejected_abi_json("output_serialize_failed", "Failed to serialize ABI output")
     })
 }
 
-fn rejected_abi_json(code: &str, message: &str) -> Vec<u8> {
-    serde_json::to_vec(&AbiEnvelope {
+fn evaluate_flat_abi_value(value: Value) -> AbiEnvelope {
+    if value.get("candidates").is_some() {
+        return match serde_json::from_value::<BingxSignalScanInput>(value)
+            .map_err(|error| BingxContractError(format!("invalid_json: {error}")))
+            .and_then(evaluate_signal_scan)
+        {
+            Ok(result) => executed_abi_envelope(result),
+            Err(error) => rejected_abi_envelope("invalid_args", &error.to_string()),
+        };
+    }
+    match serde_json::from_value::<BingxIntentInput>(value)
+        .map_err(|error| BingxContractError(format!("invalid_json: {error}")))
+        .and_then(evaluate)
+    {
+        Ok(result) => executed_abi_envelope(result),
+        Err(error) => rejected_abi_envelope("invalid_args", &error.to_string()),
+    }
+}
+
+fn parse_abi_request_envelope(value: Value) -> Option<AbiRequestEnvelope> {
+    if !value.is_object() || value.get("method").is_none() || value.get("args").is_none() {
+        return None;
+    }
+    serde_json::from_value(value).ok()
+}
+
+fn evaluate_abi_request(request: AbiRequestEnvelope) -> AbiEnvelope {
+    if request.schema_version != ABI_SCHEMA_VERSION {
+        return rejected_abi_envelope(
+            "invalid_schema_version",
+            "invalid_schema_version: expected 1",
+        );
+    }
+    if request.plugin_id.trim() != PLUGIN_ID {
+        return rejected_abi_envelope("unsupported_plugin", "unsupported plugin id");
+    }
+    match request.method.trim() {
+        PLACE_ORDER_INTENT_METHOD => {
+            match serde_json::from_value::<BingxIntentInput>(request.args)
+                .map_err(|error| BingxContractError(format!("invalid_args: {error}")))
+                .and_then(evaluate)
+            {
+                Ok(result) => executed_abi_envelope(result),
+                Err(error) => rejected_abi_envelope("invalid_args", &error.to_string()),
+            }
+        }
+        RANK_SIGNALS_METHOD => {
+            match serde_json::from_value::<BingxSignalScanInput>(request.args)
+                .map_err(|error| BingxContractError(format!("invalid_args: {error}")))
+                .and_then(evaluate_signal_scan)
+            {
+                Ok(result) => executed_abi_envelope(result),
+                Err(error) => rejected_abi_envelope("invalid_args", &error.to_string()),
+            }
+        }
+        _ => rejected_abi_envelope("unsupported_method", "unsupported method"),
+    }
+}
+
+fn executed_abi_envelope<T: Serialize>(result: T) -> AbiEnvelope {
+    match serde_json::to_value(result) {
+        Ok(value) => AbiEnvelope {
+            schema_version: ABI_SCHEMA_VERSION,
+            status: "executed".to_string(),
+            result: Some(value),
+            error_code: None,
+            error_message: None,
+        },
+        Err(error) => rejected_abi_envelope(
+            "output_serialize_failed",
+            &format!("Failed to serialize ABI output: {error}"),
+        ),
+    }
+}
+
+fn rejected_abi_envelope(code: &str, message: &str) -> AbiEnvelope {
+    AbiEnvelope {
         schema_version: ABI_SCHEMA_VERSION,
         status: "rejected".to_string(),
         result: None,
         error_code: Some(code.to_string()),
         error_message: Some(message.to_string()),
-    })
-    .unwrap_or_default()
+    }
+}
+
+fn rejected_abi_json(code: &str, message: &str) -> Vec<u8> {
+    serde_json::to_vec(&rejected_abi_envelope(code, message)).unwrap_or_default()
 }
 
 pub fn evaluate(input: BingxIntentInput) -> Result<BingxIntentOutput, BingxContractError> {
@@ -486,6 +627,207 @@ pub fn evaluate(input: BingxIntentInput) -> Result<BingxIntentOutput, BingxContr
         canonical_json,
         intent_hash_hex,
     })
+}
+
+pub fn evaluate_signal_scan(
+    input: BingxSignalScanInput,
+) -> Result<BingxSignalScanOutput, BingxContractError> {
+    if input.schema_version != ABI_SCHEMA_VERSION {
+        return Err(BingxContractError(
+            "invalid_schema_version: expected 1".to_string(),
+        ));
+    }
+    if input.plugin_id.trim() != PLUGIN_ID {
+        return Err(BingxContractError(
+            "invalid_plugin_id: unsupported plugin id".to_string(),
+        ));
+    }
+    if input.candidates.is_empty() {
+        return Err(BingxContractError(
+            "candidates must be a non-empty list".to_string(),
+        ));
+    }
+
+    let mut entries = Vec::<BingxSignalScanEntry>::with_capacity(input.candidates.len());
+    for candidate in input.candidates {
+        entries.push(rank_signal_candidate(candidate)?);
+    }
+    entries.sort_by(|a, b| {
+        bucket_priority(b.bucket)
+            .cmp(&bucket_priority(a.bucket))
+            .then_with(|| b.score.cmp(&a.score))
+            .then_with(|| a.symbol.cmp(&b.symbol))
+    });
+
+    let canonical = CanonicalSignalScan {
+        schema_version: ABI_SCHEMA_VERSION,
+        plugin_id: PLUGIN_ID.to_string(),
+        contract_kind: SIGNAL_SCAN_CONTRACT_KIND.to_string(),
+        entries: entries.clone(),
+    };
+    let canonical_json = serde_json::to_string(&canonical)
+        .map_err(|error| BingxContractError(format!("canonical_scan_serialize_failed: {error}")))?;
+    let scan_hash_hex = sha256_hex(canonical_json.as_bytes());
+
+    Ok(BingxSignalScanOutput {
+        entries,
+        canonical_json,
+        scan_hash_hex,
+    })
+}
+
+fn rank_signal_candidate(
+    candidate: BingxSignalScanCandidate,
+) -> Result<BingxSignalScanEntry, BingxContractError> {
+    let symbol = candidate.symbol.trim().to_uppercase();
+    if !is_valid_symbol(&symbol) {
+        return Err(BingxContractError(
+            "candidate symbol format is invalid".to_string(),
+        ));
+    }
+    let decision = normalize_decision(&candidate.decision)?;
+    let side = normalize_optional_side(candidate.side.as_deref())?;
+    let zone_low_decimal =
+        normalize_optional_decimal(candidate.zone_low_decimal.as_deref(), "zone_low_decimal")?;
+    let zone_high_decimal =
+        normalize_optional_decimal(candidate.zone_high_decimal.as_deref(), "zone_high_decimal")?;
+    if let (Some(low), Some(high)) = (zone_low_decimal.as_deref(), zone_high_decimal.as_deref()) {
+        if to_scaled_int(low, 8)? >= to_scaled_int(high, 8)? {
+            return Err(BingxContractError(
+                "zone_low_decimal must be less than zone_high_decimal".to_string(),
+            ));
+        }
+    }
+    let trend_gate_code = normalize_token(
+        candidate.trend_gate_code.as_deref().unwrap_or("ok"),
+        "trend_gate_code",
+    )?;
+    let zone_anchor_source = normalize_optional_token(candidate.zone_anchor_source.as_deref())?;
+    let zone_anchor_lifecycle =
+        normalize_optional_token(candidate.zone_anchor_lifecycle.as_deref())?;
+    let trend_4h = normalize_optional_token(candidate.trend_4h.as_deref())?;
+    let trend_1d = normalize_optional_token(candidate.trend_1d.as_deref())?;
+    let zone_anchor_executable = candidate.zone_anchor_executable.unwrap_or(false);
+    let live_decision_hash_hex =
+        normalize_optional_hash(candidate.live_decision_hash_hex.as_deref())?;
+    let mut failed_reason_codes = candidate
+        .failed_reason_codes
+        .unwrap_or_default()
+        .into_iter()
+        .map(|code| normalize_token(&code, "failed_reason_code"))
+        .collect::<Result<Vec<_>, _>>()?;
+    failed_reason_codes.sort();
+    failed_reason_codes.dedup();
+
+    let bucket = signal_bucket(
+        candidate.can_prepare_intent,
+        &decision,
+        side.as_deref(),
+        zone_low_decimal.as_deref(),
+        zone_high_decimal.as_deref(),
+        zone_anchor_executable,
+    );
+    let score = signal_score(
+        bucket,
+        &trend_gate_code,
+        zone_anchor_source.as_deref(),
+        zone_anchor_lifecycle.as_deref(),
+        zone_anchor_executable,
+        side.as_deref(),
+        trend_4h.as_deref(),
+        trend_1d.as_deref(),
+        failed_reason_codes.len(),
+    );
+
+    Ok(BingxSignalScanEntry {
+        symbol,
+        bucket,
+        score,
+        decision,
+        side,
+        zone_low_decimal,
+        zone_high_decimal,
+        trend_gate_code,
+        can_prepare_intent: candidate.can_prepare_intent,
+        live_decision_hash_hex,
+        failed_reason_codes,
+    })
+}
+
+fn signal_bucket(
+    can_prepare_intent: bool,
+    decision: &str,
+    side: Option<&str>,
+    zone_low_decimal: Option<&str>,
+    zone_high_decimal: Option<&str>,
+    zone_anchor_executable: bool,
+) -> SignalScanBucket {
+    if can_prepare_intent {
+        return SignalScanBucket::Ready;
+    }
+    if decision == "blocked" {
+        return SignalScanBucket::Blocked;
+    }
+    let directional = matches!(decision, "long" | "short") && side.is_some();
+    let zoned = zone_low_decimal.is_some() && zone_high_decimal.is_some() && zone_anchor_executable;
+    if directional || zoned {
+        return SignalScanBucket::Near;
+    }
+    SignalScanBucket::NoSignal
+}
+
+fn signal_score(
+    bucket: SignalScanBucket,
+    trend_gate_code: &str,
+    zone_anchor_source: Option<&str>,
+    zone_anchor_lifecycle: Option<&str>,
+    zone_anchor_executable: bool,
+    side: Option<&str>,
+    trend_4h: Option<&str>,
+    trend_1d: Option<&str>,
+    failed_reason_count: usize,
+) -> i32 {
+    let mut score = match bucket {
+        SignalScanBucket::Ready => 10_000,
+        SignalScanBucket::Near => 5_000,
+        SignalScanBucket::Blocked => 1_000,
+        SignalScanBucket::NoSignal => 0,
+        SignalScanBucket::Error => -1_000,
+    };
+    if trend_gate_code == "ok" {
+        score += 300;
+    }
+    if zone_anchor_executable {
+        score += 200;
+    }
+    if zone_anchor_source == Some("liquidation") {
+        score += 100;
+    }
+    if zone_anchor_lifecycle == Some("fresh") {
+        score += 80;
+    }
+    if trend_aligned(side, trend_4h, trend_1d) {
+        score += 120;
+    }
+    score - (failed_reason_count as i32 * 25)
+}
+
+fn trend_aligned(side: Option<&str>, trend_4h: Option<&str>, trend_1d: Option<&str>) -> bool {
+    match side {
+        Some("sell") => trend_4h == Some("bear") || trend_1d == Some("bear"),
+        Some("buy") => trend_4h == Some("bull") || trend_1d == Some("bull"),
+        _ => false,
+    }
+}
+
+fn bucket_priority(bucket: SignalScanBucket) -> u8 {
+    match bucket {
+        SignalScanBucket::Ready => 4,
+        SignalScanBucket::Near => 3,
+        SignalScanBucket::Blocked => 2,
+        SignalScanBucket::NoSignal => 1,
+        SignalScanBucket::Error => 0,
+    }
 }
 
 fn validate_common(input: &BingxIntentInput) -> Result<(), BingxContractError> {
@@ -757,6 +1099,62 @@ fn normalize_optional_trimmed(value: Option<&str>) -> Option<String> {
     }
 }
 
+fn normalize_decision(value: &str) -> Result<String, BingxContractError> {
+    let normalized = value.trim().to_lowercase();
+    match normalized.as_str() {
+        "long" | "short" | "no_signal" | "blocked" => Ok(normalized),
+        _ => Err(BingxContractError(
+            "decision must be long, short, no_signal, or blocked".to_string(),
+        )),
+    }
+}
+
+fn normalize_optional_side(value: Option<&str>) -> Result<Option<String>, BingxContractError> {
+    if !is_provided(value) {
+        return Ok(None);
+    }
+    match value.unwrap_or_default().trim().to_lowercase().as_str() {
+        "buy" => Ok(Some("buy".to_string())),
+        "sell" => Ok(Some("sell".to_string())),
+        _ => Err(BingxContractError("side must be buy or sell".to_string())),
+    }
+}
+
+fn normalize_token(value: &str, field: &str) -> Result<String, BingxContractError> {
+    let normalized = value.trim().to_lowercase();
+    if normalized.is_empty()
+        || normalized.len() > 64
+        || !normalized
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+    {
+        return Err(BingxContractError(format!(
+            "{field} must be a lowercase snake_case token <= 64 chars"
+        )));
+    }
+    Ok(normalized)
+}
+
+fn normalize_optional_token(value: Option<&str>) -> Result<Option<String>, BingxContractError> {
+    if !is_provided(value) {
+        return Ok(None);
+    }
+    Ok(Some(normalize_token(value.unwrap_or_default(), "token")?))
+}
+
+fn normalize_optional_hash(value: Option<&str>) -> Result<Option<String>, BingxContractError> {
+    if !is_provided(value) {
+        return Ok(None);
+    }
+    let normalized = value.unwrap_or_default().trim().to_lowercase();
+    if !is_hex64(&normalized) {
+        return Err(BingxContractError(
+            "live_decision_hash_hex must be 64 lowercase hex chars".to_string(),
+        ));
+    }
+    Ok(Some(normalized))
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut output = String::with_capacity(64);
@@ -798,6 +1196,79 @@ mod tests {
         }
     }
 
+    fn sample_scan_input() -> BingxSignalScanInput {
+        BingxSignalScanInput {
+            schema_version: 1,
+            plugin_id: PLUGIN_ID.to_string(),
+            candidates: vec![
+                BingxSignalScanCandidate {
+                    symbol: "xrp-usdt".to_string(),
+                    can_prepare_intent: false,
+                    decision: "blocked".to_string(),
+                    side: None,
+                    zone_low_decimal: None,
+                    zone_high_decimal: None,
+                    trend_gate_code: Some("consensus_guard".to_string()),
+                    zone_anchor_source: None,
+                    zone_anchor_executable: Some(false),
+                    zone_anchor_lifecycle: None,
+                    trend_4h: Some("flat".to_string()),
+                    trend_1d: Some("flat".to_string()),
+                    live_decision_hash_hex: Some("11".repeat(32)),
+                    failed_reason_codes: Some(vec!["consensus_guard".to_string()]),
+                },
+                BingxSignalScanCandidate {
+                    symbol: "sol-usdt".to_string(),
+                    can_prepare_intent: true,
+                    decision: "short".to_string(),
+                    side: Some("sell".to_string()),
+                    zone_low_decimal: Some("89".to_string()),
+                    zone_high_decimal: Some("91".to_string()),
+                    trend_gate_code: Some("ok".to_string()),
+                    zone_anchor_source: Some("liquidation".to_string()),
+                    zone_anchor_executable: Some(true),
+                    zone_anchor_lifecycle: Some("fresh".to_string()),
+                    trend_4h: Some("bear".to_string()),
+                    trend_1d: Some("bear".to_string()),
+                    live_decision_hash_hex: Some("22".repeat(32)),
+                    failed_reason_codes: Some(vec![]),
+                },
+                BingxSignalScanCandidate {
+                    symbol: "bnb-usdt".to_string(),
+                    can_prepare_intent: false,
+                    decision: "short".to_string(),
+                    side: Some("sell".to_string()),
+                    zone_low_decimal: Some("600".to_string()),
+                    zone_high_decimal: Some("615".to_string()),
+                    trend_gate_code: Some("trend_gate_short_far_retest".to_string()),
+                    zone_anchor_source: Some("liquidation".to_string()),
+                    zone_anchor_executable: Some(true),
+                    zone_anchor_lifecycle: Some("fresh".to_string()),
+                    trend_4h: Some("bear".to_string()),
+                    trend_1d: Some("flat".to_string()),
+                    live_decision_hash_hex: Some("33".repeat(32)),
+                    failed_reason_codes: Some(vec!["trend_gate_short_far_retest".to_string()]),
+                },
+                BingxSignalScanCandidate {
+                    symbol: "btc-usdt".to_string(),
+                    can_prepare_intent: false,
+                    decision: "no_signal".to_string(),
+                    side: None,
+                    zone_low_decimal: None,
+                    zone_high_decimal: None,
+                    trend_gate_code: Some("ok".to_string()),
+                    zone_anchor_source: None,
+                    zone_anchor_executable: Some(false),
+                    zone_anchor_lifecycle: None,
+                    trend_4h: Some("flat".to_string()),
+                    trend_1d: Some("flat".to_string()),
+                    live_decision_hash_hex: Some("44".repeat(32)),
+                    failed_reason_codes: Some(vec!["trade_delta_guard".to_string()]),
+                },
+            ],
+        }
+    }
+
     #[test]
     fn deterministic_hash_for_identical_inputs() {
         let first = evaluate(sample_input()).expect("first evaluation should pass");
@@ -814,19 +1285,82 @@ mod tests {
         let second = evaluate_abi_json(&raw);
         assert_eq!(first, second);
 
-        let envelope: AbiEnvelope =
-            serde_json::from_slice(&first).expect("ABI envelope parses");
+        let envelope: AbiEnvelope = serde_json::from_slice(&first).expect("ABI envelope parses");
         assert_eq!(envelope.schema_version, ABI_SCHEMA_VERSION);
         assert_eq!(envelope.status, "executed");
-        let result = envelope.result.expect("semantic result exists");
+        let result: BingxIntentOutput =
+            serde_json::from_value(envelope.result.expect("semantic result exists"))
+                .expect("intent result parses");
         assert_eq!(result.limit_price_decimal.as_deref(), Some("60000"));
         assert_eq!(result.intent_hash_hex.len(), 64);
     }
 
     #[test]
+    fn signal_scan_ranks_candidates_deterministically() {
+        let first = evaluate_signal_scan(sample_scan_input()).expect("scan should pass");
+        let second = evaluate_signal_scan(sample_scan_input()).expect("scan should pass");
+        assert_eq!(first.canonical_json, second.canonical_json);
+        assert_eq!(first.scan_hash_hex, second.scan_hash_hex);
+        assert_eq!(first.scan_hash_hex.len(), 64);
+        assert_eq!(
+            first
+                .entries
+                .iter()
+                .map(|entry| entry.symbol.as_str())
+                .collect::<Vec<_>>(),
+            vec!["SOL-USDT", "BNB-USDT", "XRP-USDT", "BTC-USDT"]
+        );
+        assert_eq!(first.entries[0].bucket, SignalScanBucket::Ready);
+        assert_eq!(first.entries[1].bucket, SignalScanBucket::Near);
+        assert_eq!(first.entries[2].bucket, SignalScanBucket::Blocked);
+        assert_eq!(first.entries[3].bucket, SignalScanBucket::NoSignal);
+    }
+
+    #[test]
+    fn abi_request_dispatches_signal_scan_method() {
+        let request = serde_json::json!({
+            "schema_version": 1,
+            "plugin_id": PLUGIN_ID,
+            "method": RANK_SIGNALS_METHOD,
+            "args": sample_scan_input(),
+        });
+        let first = evaluate_abi_json(&request.to_string());
+        let second = evaluate_abi_json(&request.to_string());
+        assert_eq!(first, second);
+
+        let envelope: AbiEnvelope = serde_json::from_slice(&first).expect("ABI envelope parses");
+        assert_eq!(envelope.status, "executed");
+        let result: BingxSignalScanOutput =
+            serde_json::from_value(envelope.result.expect("scan result exists"))
+                .expect("scan result parses");
+        assert_eq!(result.entries.first().unwrap().symbol, "SOL-USDT");
+        assert_eq!(
+            result.entries.first().unwrap().bucket,
+            SignalScanBucket::Ready
+        );
+        assert_eq!(result.scan_hash_hex.len(), 64);
+    }
+
+    #[test]
+    fn flat_abi_input_supports_signal_scan_for_host_runtime() {
+        let raw = serde_json::to_string(&sample_scan_input()).expect("scan input serializes");
+        let envelope: AbiEnvelope =
+            serde_json::from_slice(&evaluate_abi_json(&raw)).expect("ABI envelope parses");
+        assert_eq!(envelope.status, "executed");
+        let result: BingxSignalScanOutput =
+            serde_json::from_value(envelope.result.expect("scan result exists"))
+                .expect("scan result parses");
+        assert_eq!(result.entries.first().unwrap().symbol, "SOL-USDT");
+        assert_eq!(
+            result.entries.first().unwrap().bucket,
+            SignalScanBucket::Ready
+        );
+    }
+
+    #[test]
     fn abi_envelope_rejects_invalid_input_without_trapping() {
-        let envelope: AbiEnvelope = serde_json::from_slice(&evaluate_abi_json("{}"))
-            .expect("ABI rejection parses");
+        let envelope: AbiEnvelope =
+            serde_json::from_slice(&evaluate_abi_json("{}")).expect("ABI rejection parses");
         assert_eq!(envelope.status, "rejected");
         assert_eq!(envelope.error_code.as_deref(), Some("invalid_args"));
         assert!(envelope.result.is_none());

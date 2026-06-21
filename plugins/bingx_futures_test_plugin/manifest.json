@@ -1,7 +1,7 @@
 {
   "schema": "hivra.plugin.manifest",
   "version": 1,
-  "release_version": "0.2.1",
+  "release_version": "0.2.2",
   "plugin_id": "hivra.contract.bingx-futures-trading.v1",
   "wasm_module": "hivra_bingx_futures_test_plugin.wasm",
   "capabilities": [
@@ -10,7 +10,11 @@
     "exchange.trade.bingx.futures"
   ],
   "contract": {
-    "kind": "bingx_futures_order_intent"
+    "kind": "bingx_futures_order_intent",
+    "methods": [
+      "place_bingx_futures_order_intent",
+      "rank_bingx_futures_signals"
+    ]
   },
   "runtime": {
     "abi": "hivra_host_abi_v2",

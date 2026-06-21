@@ -8,10 +8,10 @@
       "id": "bingx-futures-test",
       "plugin_id": "hivra.contract.bingx-futures-trading.v1",
       "display_name": "BingX Futures Trading (Test Plugin)",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "package_kind": "zip",
-      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.1-plugins/bingx_futures_test_plugin-0.2.1.zip",
-      "sha256_hex": "b06f5e65872ad7eb6b8cf35bb1bd67dddc525d76c5a6007c5a74638aa3e9da24"
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.2-plugins/bingx_futures_test_plugin-0.2.2.zip",
+      "sha256_hex": "7229167a2d9040bd25fff186f225939debf890d89ad0b2770fd1da8f7810f250"
     },
     {
       "id": "capsule-chat-test",
