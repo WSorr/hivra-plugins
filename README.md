@@ -44,6 +44,18 @@ an exact `sha256_hex`. Validate the catalog before release:
 python3 scripts/validate_catalog.py
 ```
 
+Remote catalogs may be signed with Ed25519. Keep the private key outside git:
+
+```bash
+openssl genpkey -algorithm Ed25519 -out ~/.hivra/plugin_catalog_ed25519.pem
+python3 scripts/sign_catalog.py \
+  --key ~/.hivra/plugin_catalog_ed25519.pem \
+  --print-public-key
+```
+
+The printed raw public key hex is the value to pin in `Hivra-App`. The catalog
+signature covers canonical JSON with the top-level `signatures` field removed.
+
 Run the complete repository review:
 
 ```bash
