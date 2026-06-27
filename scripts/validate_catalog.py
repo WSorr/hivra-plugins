@@ -25,20 +25,19 @@ if not isinstance(entries, list) or not entries:
     fail("entries must be a non-empty list")
 
 signatures = catalog.get("signatures", [])
-if signatures is not None:
-    if not isinstance(signatures, list):
-        fail("signatures must be a list when present")
-    for signature in signatures:
-        if not isinstance(signature, dict):
-            fail("signature entries must be objects")
-        if signature.get("algorithm") != "ed25519":
-            fail("signature algorithm must be ed25519")
-        key_id = str(signature.get("key_id", "")).strip().lower()
-        if not re.fullmatch(r"[0-9a-f]{64}", key_id):
-            fail("signature key_id must be sha256 hex")
-        signature_hex = str(signature.get("signature_hex", "")).strip().lower()
-        if not re.fullmatch(r"[0-9a-f]{128}", signature_hex):
-            fail("signature_hex must be 64-byte hex")
+if not isinstance(signatures, list) or not signatures:
+    fail("published catalog must include at least one signature")
+for signature in signatures:
+    if not isinstance(signature, dict):
+        fail("signature entries must be objects")
+    if signature.get("algorithm") != "ed25519":
+        fail("signature algorithm must be ed25519")
+    key_id = str(signature.get("key_id", "")).strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", key_id):
+        fail("signature key_id must be sha256 hex")
+    signature_hex = str(signature.get("signature_hex", "")).strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{128}", signature_hex):
+        fail("signature_hex must be 64-byte hex")
 
 seen_ids: set[str] = set()
 for entry in entries:

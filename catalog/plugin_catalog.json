@@ -22,5 +22,12 @@
       "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.1-plugins/capsule_chat_test_plugin-0.2.1.zip",
       "sha256_hex": "d1100a46212b501dba3b6952b323b36aff561756c98e9745110de21cfc19ef23"
     }
+  ],
+  "signatures": [
+    {
+      "algorithm": "ed25519",
+      "key_id": "f4757da54ecb6f16431bcfb4fcc947633d6f68c9b4576b69ddb61fc4fe2de7a3",
+      "signature_hex": "7d63b2b185d7e86dbfab1593016c00f31c310daa9f9e59c33bd03cb0ca572f65432a76c6fccbbaec827220b1cb7cf836edf741b0c3a627e5af186168f1034207"
+    }
   ]
 }
