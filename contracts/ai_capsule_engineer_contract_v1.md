@@ -640,18 +640,217 @@ All failures must leave capsule state unchanged.
 
 ## Implementation Plan
 
-1. Add AI credential storage with secure-storage-only behavior.
-2. Add snapshot builder for Capsule Doctor.
-3. Add redaction and denylist tests.
-4. Add host AI adapter with provider boundary.
-5. Add UI screen: Inspect Capsule.
-6. Add Developer Mode with repository path and allowlist scanner.
-7. Add prompt-injection guardrails.
-8. Add structured report renderer.
-9. Add evidence hashes for snapshot and selected repo files.
-10. Add Plugin Auditor mode for existing plugin packages.
-11. Add Plugin Scaffolder draft mode.
-12. Add release checklist coverage.
+Implement in phases. Do not skip directly to Developer Mode.
+
+### Phase 0: Contract Only
+
+Repository: `hivra-plugins`
+
+- maintain this contract
+- maintain checklist
+- no app code
+- no provider calls
+
+Exit criteria:
+
+- contract is reviewed and pushed
+- checklist exists
+- no Core dependency exists
+
+### Phase 1: Local Capsule Doctor
+
+Repository: `Hivra-App`
+
+Add modules:
+
+- `AiCapsuleSnapshotService`
+- `AiCapsuleLocalDiagnosisService`
+- `AiRedactionPolicyService`
+- `AiInspectionReportModels`
+- screen: `Capsule Doctor` or `Inspect Capsule`
+
+Behavior:
+
+- no AI provider call yet
+- no API key field yet
+- no repository access
+- build deterministic capsule snapshot
+- build local report from ledger/outbox/consensus/plugin summaries
+- show snapshot hash and included sections
+
+Exit criteria:
+
+- useful offline report exists
+- snapshot hash is deterministic
+- redaction tests pass
+- no secret paths are included
+
+### Phase 2: Scoped AI Chat
+
+Repository: `Hivra-App`
+
+Add modules:
+
+- `AiCredentialStore`
+- `AiProviderAdapter`
+- `AiScopedPromptService`
+- `AiOutboundPreviewService`
+
+Behavior:
+
+- user enters provider API key
+- key stored only in secure storage
+- user writes `user_query`
+- user chooses context sections
+- app shows outbound preview summary
+- provider receives snapshot + query
+- response is rendered as advisory report
+
+Exit criteria:
+
+- malformed provider response is rejected
+- provider errors leave capsule unchanged
+- user can clear key
+- no plaintext fallback exists
+
+### Phase 3: Plugin Auditor
+
+Repositories:
+
+- `Hivra-App` for host/UI implementation
+- `hivra-plugins` for contract/test package examples
+
+Add modules:
+
+- `AiPluginAuditSnapshotService`
+- `AiPluginAuditReportService`
+
+Behavior:
+
+- inspect installed plugin manifest
+- inspect capabilities
+- inspect catalog/hash/signature evidence
+- inspect runtime invocation evidence
+- no registry mutation
+
+Exit criteria:
+
+- auditor can explain install/runtime/capability failure
+- auditor cannot grant capabilities
+- tests cover manifest/capability mismatch
+
+### Phase 4: Developer Workspace
+
+Repository: `Hivra-App`
+
+Add modules:
+
+- `AiDeveloperWorkspaceRegistryService`
+- `AiRepoCacheService`
+- `AiRepoAllowlistScanner`
+- `AiRepoSnippetSelector`
+
+Behavior:
+
+- developer mode disabled by default
+- user adds repo links/local paths
+- host clones public repos read-only when requested
+- host pins commit/tag where possible
+- scanner selects allowlisted snippets
+- report marks mutable/unpinned contexts
+
+Exit criteria:
+
+- no hooks/scripts run after clone
+- symlink escapes rejected
+- denylist applies to repo cache
+- full repo dumps are impossible
+
+### Phase 5: Plugin Scaffolder
+
+Repositories:
+
+- `Hivra-App` for UI/orchestration
+- `hivra-plugins` for generated drafts and review pipeline
+
+Add modules:
+
+- `AiPluginDraftService`
+- `AiPluginDraftValidator`
+
+Behavior:
+
+- developer supplies plugin id, purpose, capabilities, host API version
+- generated files go to draft path only
+- generated package is not built/installed/published automatically
+- user promotes draft manually through normal plugin review flow
+
+Exit criteria:
+
+- generated draft includes manifest/source/tests/README
+- no secrets in generated files
+- package build/catalog/signing/commit/release remain manual steps
+
+## App Repository Module Boundaries
+
+The main app may contain host-side services and UI only:
+
+- snapshot builders
+- redaction policy
+- secure credential store
+- provider adapter
+- report renderer
+- repo cache/scanner
+- developer workspace registry
+
+The main app must not contain plugin source packages created by Scaffolder.
+Generated plugin drafts belong outside Core and should be directed to a draft
+area or to `hivra-plugins` only after explicit user action.
+
+## Plugin Repository Boundaries
+
+The plugin repository may contain:
+
+- this contract
+- checklist
+- plugin examples
+- generated plugin drafts when explicitly accepted
+- package/review scripts
+
+The plugin repository must not contain:
+
+- app runtime code
+- capsule seeds
+- user ledgers
+- provider API keys
+- Hivra app signing credentials
+
+## Suggested UI Surfaces
+
+Minimum:
+
+- Settings -> AI Credentials
+- Settings -> Developer Mode
+- Settings -> Developer Repositories
+- Plugins -> Audit Plugin
+- Capsule -> Inspect Capsule
+
+Scoped chat field:
+
+```text
+Ask:
+[ Why is this invitation pending? ]
+
+Context:
+[x] Ledger summary
+[x] Transport outbox
+[x] Consensus snapshot
+[ ] Logs excerpt
+[ ] Plugin diagnostics
+```
+
+The text field never grants additional capability. It only changes the question
+asked against already selected evidence.
 
 ## Acceptance Criteria
 

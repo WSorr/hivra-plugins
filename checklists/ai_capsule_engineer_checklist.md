@@ -14,6 +14,11 @@ Use this checklist before shipping any AI-assisted capsule inspection feature.
 - [ ] Plugin Auditor and Plugin Scaffolder modes are separate from capsule
       diagnostics.
 - [ ] Plugin Scaffolder writes only draft files until human approval.
+- [ ] Implementation follows phases in order: local doctor, scoped AI chat,
+      plugin auditor, developer workspace, scaffolder.
+- [ ] Main app contains host/UI services only, not generated plugin packages.
+- [ ] Plugin repo contains contracts/packages/scripts only, not app runtime or
+      user capsule data.
 
 ## Secret Safety
 
@@ -114,6 +119,18 @@ Use this checklist before shipping any AI-assisted capsule inspection feature.
 - [ ] User can clear repository cache.
 - [ ] Capsule Doctor shows a local deterministic diagnostic summary when AI is
       unavailable.
+- [ ] Scoped chat field does not grant capabilities.
+- [ ] Context checkboxes control what evidence is sent.
+- [ ] Developer Mode screens are visually distinct from user-facing diagnostics.
+
+## Implementation Phases
+
+- [ ] Phase 1 local Capsule Doctor works without provider key.
+- [ ] Phase 2 scoped AI chat works with outbound preview.
+- [ ] Phase 3 Plugin Auditor works for installed plugin packages.
+- [ ] Phase 4 Developer Workspace works with repo allowlist/cache.
+- [ ] Phase 5 Plugin Scaffolder creates draft-only packages.
+- [ ] Each phase is independently testable and releasable.
 
 ## Failure Handling
 
