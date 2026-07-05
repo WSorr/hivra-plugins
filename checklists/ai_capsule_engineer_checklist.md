@@ -132,6 +132,29 @@ Use this checklist before shipping any AI-assisted capsule inspection feature.
 - [ ] Phase 5 Plugin Scaffolder creates draft-only packages.
 - [ ] Each phase is independently testable and releasable.
 
+## Upgrade Plan Gate
+
+- [ ] Hivra Engineer Advisory Ask submits only selected context, capsule
+      summary, and user question.
+- [ ] Hivra Engineer Advisory Ask returns findings/tests/patch plan only, not
+      applied changes.
+- [ ] Developer provider tests cover empty context, changed files, oversized
+      payloads, provider errors, and malformed responses.
+- [ ] Remote repository cache is read-only, pinned where possible, clearable,
+      and hostile-by-default.
+- [ ] Remote repository cache does not execute hooks/scripts or fetch
+      submodules unless explicitly allowlisted.
+- [ ] Plugin Auditor v2 can inspect selected plugin source snippets only in
+      Developer Mode.
+- [ ] Plugin Scaffolder writes draft files only and never builds, installs,
+      signs, publishes, commits, pushes, tags, or releases automatically.
+- [ ] Patch Proposal Mode produces diff/text previews only.
+- [ ] Review Gate Integration marks AI output unverified until required checks
+      are run.
+- [ ] Release readiness includes manual smoke for Capsule Doctor, scoped AI
+      chat, Plugin Auditor, Developer Mode, Workspace Preview, Selected
+      Context, and Hivra Engineer Advisory Ask.
+
 ## Failure Handling
 
 - [ ] Invalid AI key leaves capsule state unchanged.

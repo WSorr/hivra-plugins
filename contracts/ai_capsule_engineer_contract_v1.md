@@ -869,3 +869,107 @@ asked against already selected evidence.
 - Offline local diagnostic summary works without provider access.
 - Provider failures, redaction failures, malformed AI responses, and forbidden
   suggested actions leave capsule state unchanged.
+
+## Upgrade Plan
+
+This plan is intentionally staged. Do not skip directly from selected context
+preview to automatic patching or plugin generation.
+
+### 1. Hivra Engineer Advisory Ask
+
+Developer Mode may submit only explicit selected evidence:
+
+- redacted Capsule Doctor snapshot summary
+- selected developer context snippets
+- user question
+- outbound preview hash and payload size
+
+The model output is advisory only:
+
+- likely files
+- hypotheses
+- suggested tests
+- patch plan
+
+Forbidden:
+
+- file writes
+- patch application
+- git commit/push/tag
+- release actions
+- ledger, outbox, plugin registry, or credential mutation
+
+### 2. Provider Boundary Tests
+
+Before adding remote repositories or patch proposals, host tests must cover:
+
+- empty selected context rejected
+- selected file changed after preview rejected
+- oversized context rejected
+- denylisted paths excluded
+- prompt-injection warning included
+- malformed provider response rejected
+- provider timeout/rate-limit leaves all state unchanged
+
+### 3. Remote Repository Allowlist Cache
+
+Remote repository context must be explicit and hostile-by-default:
+
+- user supplies repository URL
+- public repositories may be cloned read-only
+- commit/tag is pinned where possible
+- mutable/unpinned context is marked dangerous
+- hooks/scripts are not executed
+- submodules are not fetched unless explicitly allowlisted
+- cache can be cleared by the user
+
+### 4. Plugin Auditor v2
+
+Plugin Auditor may combine:
+
+- installed package metadata
+- catalog signature/digest evidence
+- runtime invocation evidence
+- selected plugin source snippets in Developer Mode
+
+It still cannot mutate registry/catalog/package files or grant capabilities.
+
+### 5. Plugin Scaffolder Draft Mode
+
+Scaffolder may create draft-only plugin skeletons after explicit developer
+input:
+
+- plugin id
+- purpose
+- capabilities
+- host API version
+
+Draft output may include manifest, source skeleton, tests, README, and golden
+vectors. Build, install, catalog update, signing, commit, push, tag, and release
+remain separate human-confirmed steps.
+
+### 6. Patch Proposal Mode
+
+Patch proposals are text/diff previews only. Applying a patch is a separate
+human-confirmed action. Commits, pushes, tags, and releases remain outside model
+authority.
+
+### 7. Review Gate Integration
+
+AI reports must list required tests and gates. Output remains unverified until
+the user runs the required checks. AI output never overrides Hivra review gates,
+release gates, or manual smoke.
+
+### 8. Release Readiness
+
+Release readiness requires manual smoke for:
+
+- Capsule Doctor
+- scoped AI chat
+- Plugin Auditor
+- Developer Mode boundary
+- Workspace Preview
+- Selected Context Preview
+- Hivra Engineer Advisory Ask
+
+Android release smoke is separate from macOS stabilization.
