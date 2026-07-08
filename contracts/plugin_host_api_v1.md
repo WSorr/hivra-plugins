@@ -14,6 +14,8 @@ Contract design/profile baseline is defined in:
 - Explicit API boundary for plugin calls.
 - Guard-first behavior:
   - pair-scoped calls are blocked when consensus is not signable.
+  - solo trading intents use `"peer_hex": ""` and do not require pair
+    consensus.
 
 ## Supported Contracts (v1)
 
@@ -51,6 +53,11 @@ Contract design/profile baseline is defined in:
   }
 }
 ```
+
+For `place_bingx_futures_order_intent`, `peer_hex` is either a 64-char
+lowercase capsule peer hex for pair-scoped trading, or an empty string for solo
+trading. Solo intents remain deterministic, but they are not authorized by pair
+consensus and must not be interpreted as a shared/counterparty action.
 
 ## Response Shape
 

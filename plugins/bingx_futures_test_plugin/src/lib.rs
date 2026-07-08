@@ -842,9 +842,9 @@ fn validate_common(input: &BingxIntentInput) -> Result<(), BingxContractError> {
         ));
     }
     let peer = input.peer_hex.trim();
-    if !is_hex64(peer) {
+    if !peer.is_empty() && !is_hex64(peer) {
         return Err(BingxContractError(
-            "peer_hex must be a 64-char lowercase hex".to_string(),
+            "peer_hex must be empty for solo mode or a 64-char lowercase hex".to_string(),
         ));
     }
 
@@ -1276,6 +1276,17 @@ mod tests {
         assert_eq!(first.canonical_json, second.canonical_json);
         assert_eq!(first.intent_hash_hex, second.intent_hash_hex);
         assert_eq!(first.limit_price_decimal.as_deref(), Some("60000"));
+    }
+
+    #[test]
+    fn supports_solo_intent_without_peer_hex() {
+        let mut input = sample_input();
+        input.peer_hex = String::new();
+
+        let result = evaluate(input).expect("solo intent should pass");
+
+        assert!(result.canonical_json.contains("\"peer_hex\":\"\""));
+        assert_eq!(result.intent_hash_hex.len(), 64);
     }
 
     #[test]
