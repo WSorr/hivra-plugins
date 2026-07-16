@@ -8,10 +8,10 @@
       "id": "bingx-futures-test",
       "plugin_id": "hivra.contract.bingx-futures-trading.v1",
       "display_name": "BingX Futures Trading (Test Plugin)",
-      "version": "0.2.2",
+      "version": "0.2.3",
       "package_kind": "zip",
-      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.2-plugins/bingx_futures_test_plugin-0.2.2.zip",
-      "sha256_hex": "7229167a2d9040bd25fff186f225939debf890d89ad0b2770fd1da8f7810f250"
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.3-plugins/bingx_futures_test_plugin-0.2.3.zip",
+      "sha256_hex": "2cb440885a2fa473971364fb26cce304d079d393832b2b5bed6fd95517e61889"
     },
     {
       "id": "capsule-chat-test",
@@ -27,7 +27,7 @@
     {
       "algorithm": "ed25519",
       "key_id": "f4757da54ecb6f16431bcfb4fcc947633d6f68c9b4576b69ddb61fc4fe2de7a3",
-      "signature_hex": "05039839fdaae56c140fe29c071f853413478424d426af76e55e22cd8bc56d122de5e6f9b467775f0e1d448948ac19b698c2b4cd677f8999c975551a151f3c07"
+      "signature_hex": "6af3307405e849bc726be0be20d1b8363ed2b91b7ccd675769c63f4b4c566ca0636d759ca18bc89763e35f98a4aac03a2d2e9bf7c01de02c18c5c43b12593e02"
     }
   ]
 }
