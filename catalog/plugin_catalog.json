@@ -29,14 +29,14 @@
       "version": "0.2.0",
       "package_kind": "zip",
       "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.4-plugins/moltbook_ambassador_draft_plugin-0.2.0.zip",
-      "sha256_hex": "eff7eb8c8d4834789b286180b4f6eab6f87add225189d671fcce2c9b16f494d5"
+      "sha256_hex": "24a8d191425c6c33c2f699ff098c48c6ac5838e15c1beab05d86ed7fdf418fa1"
     }
   ],
   "signatures": [
     {
       "algorithm": "ed25519",
       "key_id": "f4757da54ecb6f16431bcfb4fcc947633d6f68c9b4576b69ddb61fc4fe2de7a3",
-      "signature_hex": "7fdde194ddea2b46c98b1ccf06b629fef89e08a033455c0e4ba8aee9aaf63e9ac6841503639b532d4ad0fa85935dba7aae7b1a51e1e545e87c1a7e7ee2c2990a"
+      "signature_hex": "f1caf0e75d676d5972d1e5b0aff8b09f7273fe3e87e0e604764bdd260dd61083f97fb3a5ceb25db97bfed2d34386247b9d429373eeb6ee2f50855e1108c01906"
     }
   ]
 }
