@@ -1,0 +1,18 @@
+{
+  "schema": "hivra.plugin.manifest",
+  "version": 1,
+  "release_version": "0.2.0",
+  "plugin_id": "hivra.contract.moltbook-ambassador.v1",
+  "wasm_module": "hivra_moltbook_ambassador_draft_plugin.wasm",
+  "capabilities": [
+    "content.draft.prepare"
+  ],
+  "contract": {
+    "kind": "moltbook_ambassador_draft"
+  },
+  "runtime": {
+    "abi": "hivra_host_abi_v2",
+    "entry_export": "hivra_evaluate_v1",
+    "module_path": "plugin/module.wasm"
+  }
+}

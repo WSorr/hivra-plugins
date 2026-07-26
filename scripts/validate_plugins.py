@@ -18,6 +18,7 @@ if not plugin_dirs:
 seen_ids: set[str] = set()
 allowed_capabilities = {
     "consensus_guard.read",
+    "content.draft.prepare",
     "exchange.read.bingx.market",
     "exchange.trade.bingx.futures",
 }

@@ -82,6 +82,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hivra_moltbook_ambassador_draft_plugin"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"

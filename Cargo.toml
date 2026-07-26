@@ -2,6 +2,7 @@
 members = [
   "plugins/bingx_futures_test_plugin",
   "plugins/capsule_chat_test_plugin",
+  "plugins/moltbook_ambassador_draft_plugin",
 ]
 resolver = "2"
 
