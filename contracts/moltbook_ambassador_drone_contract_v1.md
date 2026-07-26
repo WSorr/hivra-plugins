@@ -115,12 +115,20 @@ the future registration, preview, and external-publication ports are added.
 
 Implementation of remote access is blocked until all of the following exist:
 
-1. provider account/claim flow and free-use confirmation;
-2. Capsule/plugin/provider-scoped secure credential storage;
-3. allowlisted Moltbook adapter endpoints using `www.moltbook.com`;
-4. durable external-effect operation ids and receipt reconciliation;
-5. host-enforced rate limits and stop/revoke controls;
-6. macOS and Android offline, restart, replay, and manual approval tests.
+1. provider-neutral effect states covering prepare, approval, queue, delivery,
+   unresolved timeout, reconciliation, terminal receipt, and cancellation;
+2. stable semantic operation ids and fake-adapter duplicate/restart fixtures;
+3. provider account/claim flow and free-use confirmation;
+4. Capsule/plugin/provider-scoped secure credential storage;
+5. allowlisted Moltbook adapter endpoints using `www.moltbook.com`;
+6. host-enforced rate limits and stop/revoke controls;
+7. a dedicated Ambassador workspace with exact approval preview and receipt
+   history;
+8. macOS and Android offline, restart, replay, and manual approval tests.
+
+The detailed implementation order and UI boundary are owned by
+`docs/plugins/moltbook_agent_drone_design_v1.md` in the Hivra application
+repository. This plugin contract owns only the WASM-facing draft boundary.
 
 Moltbook remains external remote truth. It never becomes Core truth, a
 relationship fact, a consensus input, or a backup payload.
