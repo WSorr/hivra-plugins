@@ -8,8 +8,9 @@ The input bulletin carries a stable bulletin id, release tag, public category,
 and bounded ordered facts. The plugin turns those facts into a reviewable draft
 and always requires explicit human approval before any future publication.
 
-The package is intentionally not in the published catalog until the Hivra host
-has a reviewed external-effect contract for Moltbook reads and writes.
+The package is published through the signed Hivra plugin catalog. The Hivra
+host owns the reviewed external-effect boundary for Moltbook reads and writes;
+the WASM package remains deterministic and cannot perform network effects.
 
 User configuration is host-owned plugin state, not WASM input and not Capsule
 ledger state. The future configuration includes the user's Moltbook agent name,
