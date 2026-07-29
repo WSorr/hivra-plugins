@@ -455,10 +455,21 @@ fn evaluate_engagement(input: EngagementInput) -> Result<EngagementOutput, Strin
         .iter()
         .map(|topic| topic.to_ascii_lowercase())
         .any(|topic| lowered.contains(&topic) || lowered.contains(&topic.replace('-', " ")));
-    let newest_foreign_comment = input
+    let answered_comment_ids = input
+        .comments
+        .iter()
+        .filter(|comment| comment.author_name.trim().eq_ignore_ascii_case(actor_name))
+        .filter_map(|comment| comment.parent_comment_id.as_deref())
+        .collect::<Vec<_>>();
+    let newest_unanswered_foreign_comment = input
         .comments
         .iter()
         .filter(|comment| !comment.author_name.trim().eq_ignore_ascii_case(actor_name))
+        .filter(|comment| {
+            !answered_comment_ids
+                .iter()
+                .any(|answered_id| *answered_id == comment.comment_id)
+        })
         .max_by(|left, right| left.created_at_utc.cmp(&right.created_at_utc));
 
     let (action_class, target_comment_id, reason) = if post.is_spam || !post.is_verified {
@@ -472,7 +483,7 @@ fn evaluate_engagement(input: EngagementInput) -> Result<EngagementOutput, Strin
     } else if input.selection_kind == "own_activity"
         && post.author_name.trim().eq_ignore_ascii_case(actor_name)
     {
-        match newest_foreign_comment {
+        match newest_unanswered_foreign_comment {
             Some(comment) => (
                 "reply_draft",
                 Some(comment.comment_id.clone()),
@@ -923,7 +934,7 @@ mod tests {
     }
 
     #[test]
-    fn engagement_never_targets_the_actor_own_latest_comment() {
+    fn engagement_does_not_repeat_a_reply_to_an_answered_comment() {
         let input = EngagementInput {
             schema_version: 1,
             plugin_id: PLUGIN_ID.to_string(),
@@ -971,8 +982,74 @@ mod tests {
 
         assert!(output
             .canonical_json
-            .contains("\"target_comment_id\":\"reader-question\""));
+            .contains("\"action_class\":\"no_action\""));
+        assert!(output
+            .canonical_json
+            .contains("\"target_comment_id\":null"));
         assert!(!output.canonical_json.contains("actor-old-reply"));
+    }
+
+    #[test]
+    fn engagement_can_answer_a_new_foreign_follow_up() {
+        let input = EngagementInput {
+            schema_version: 1,
+            plugin_id: PLUGIN_ID.to_string(),
+            host_method: PLAN_ENGAGEMENT_METHOD.to_string(),
+            observed_at_utc: "2026-07-29T10:00:00.000Z".to_string(),
+            selection_kind: "own_activity".to_string(),
+            actor_name: "hivra_ambassador".to_string(),
+            allowed_topics: vec!["hivra-development".to_string()],
+            post: EngagementPostInput {
+                post_id: "own-post-1".to_string(),
+                title: "Hivra development".to_string(),
+                content: "A bounded runtime update.".to_string(),
+                author_name: "hivra_ambassador".to_string(),
+                submolt_name: "general".to_string(),
+                score: 2,
+                is_verified: true,
+                is_spam: false,
+                is_locked: false,
+            },
+            comments: vec![
+                EngagementCommentInput {
+                    comment_id: "reader-question".to_string(),
+                    parent_comment_id: None,
+                    content: "How does migration preserve audit continuity?".to_string(),
+                    author_name: "Reader".to_string(),
+                    score: 1,
+                    created_at_utc: "2026-07-29T09:57:00.000Z".to_string(),
+                },
+                EngagementCommentInput {
+                    comment_id: "actor-reply".to_string(),
+                    parent_comment_id: Some("reader-question".to_string()),
+                    content: "The migration path keeps legacy reads available.".to_string(),
+                    author_name: "hivra_ambassador".to_string(),
+                    score: 1,
+                    created_at_utc: "2026-07-29T09:58:00.000Z".to_string(),
+                },
+                EngagementCommentInput {
+                    comment_id: "reader-follow-up".to_string(),
+                    parent_comment_id: Some("actor-reply".to_string()),
+                    content: "How is the migration evidence verified?".to_string(),
+                    author_name: "Reader".to_string(),
+                    score: 1,
+                    created_at_utc: "2026-07-29T09:59:00.000Z".to_string(),
+                },
+            ],
+        };
+
+        let raw = serde_json::to_string(&input).expect("input serializes");
+        let envelope: AbiEnvelope =
+            serde_json::from_slice(&evaluate_abi_json(&raw)).expect("envelope parses");
+        let output: EngagementOutput =
+            serde_json::from_value(envelope.result.expect("plan output")).expect("plan parses");
+
+        assert!(output
+            .canonical_json
+            .contains("\"action_class\":\"reply_draft\""));
+        assert!(output
+            .canonical_json
+            .contains("\"target_comment_id\":\"reader-follow-up\""));
     }
 
     #[test]

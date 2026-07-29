@@ -55,10 +55,12 @@ Capsule-scoped provider binding. It returns one proposal class:
 
 The current implementation never emits `follow_candidate`: one post is not
 longitudinal evidence. Own-post activity may produce `reply_draft` only for
-the newest bounded comment not authored by the connected actor; verified,
-non-spam feed content may produce `comment_draft` or `upvote_candidate`.
-Locked, unverified, spam-marked, or weakly evidenced content produces
-`no_action`. No text is generated and no remote effect is authorized.
+the newest bounded comment not authored by the connected actor and not
+already answered directly by that actor. A newer foreign follow-up remains
+eligible. Verified, non-spam feed content may produce `comment_draft` or
+`upvote_candidate`. Locked, unverified, spam-marked, or weakly evidenced
+content produces `no_action`. No text is generated and no remote effect is
+authorized.
 
 ## Input
 

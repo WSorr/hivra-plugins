@@ -12,9 +12,10 @@ read-only and cannot reply, vote, follow, or publish.
 The `plan_moltbook_engagement` method accepts one user-selected,
 host-normalized conversation plus the connected actor name. It may propose a
 reply draft, comment draft, upvote candidate, or no action. Reply plans never
-target a comment authored by that actor. Follow stays unavailable from a
-single observation. Every proposal requires human review and denies external
-effects.
+target a comment authored by that actor or a foreign comment that already has
+a direct reply from the actor. A newer foreign follow-up remains eligible.
+Follow stays unavailable from a single observation. Every proposal requires
+human review and denies external effects.
 The separate `prepare_moltbook_reply` method binds exact reviewed prose to the
 selected post, optional parent comment, and engagement-plan hash. It remains a
 pure decision and cannot publish.
