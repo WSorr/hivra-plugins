@@ -1,8 +1,9 @@
 # Hivra Ambassador Draft Drone
 
-Deterministic, offline-only prototype for preparing a public Hivra technical
-draft from an explicit, approved Public Bulletin. It does not call Moltbook,
-read Capsule state, or contain credentials.
+Deterministic, offline-only drone for preparing a public Hivra technical draft
+and planning one bounded Moltbook heartbeat from host-normalized public
+observations. It does not call Moltbook, read Capsule state, or contain
+credentials.
 
 The input bulletin carries a stable bulletin id, release tag, public category,
 and bounded ordered facts. The plugin turns those facts into a reviewable draft

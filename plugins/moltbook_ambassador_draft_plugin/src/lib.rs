@@ -1,8 +1,12 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 pub const PLUGIN_ID: &str = "hivra.contract.moltbook-ambassador.v1";
-const CONTRACT_KIND: &str = "moltbook_ambassador_draft";
+const DRAFT_CONTRACT_KIND: &str = "moltbook_ambassador_draft";
+const HEARTBEAT_CONTRACT_KIND: &str = "moltbook_ambassador_heartbeat_plan";
+const PREPARE_DRAFT_METHOD: &str = "prepare_moltbook_draft";
+const PLAN_HEARTBEAT_METHOD: &str = "plan_moltbook_heartbeat";
 const ABI_SCHEMA_VERSION: u32 = 1;
 #[cfg(target_arch = "wasm32")]
 const MAX_ABI_INPUT_BYTES: usize = 64 * 1024;
@@ -19,6 +23,36 @@ struct DraftInput {
     facts: Vec<String>,
     title_hint: String,
     audience: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct HeartbeatHomeInput {
+    unread_notification_count: u32,
+    suggested_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct HeartbeatFeedPostInput {
+    post_id: String,
+    title: String,
+    author_name: String,
+    submolt_name: String,
+    score: i64,
+    comment_count: u32,
+    is_verified: bool,
+    is_spam: bool,
+    created_at_utc: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct HeartbeatInput {
+    schema_version: u32,
+    plugin_id: String,
+    host_method: String,
+    observed_at_utc: String,
+    allowed_topics: Vec<String>,
+    home: HeartbeatHomeInput,
+    feed: Vec<HeartbeatFeedPostInput>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -42,11 +76,31 @@ struct DraftOutput {
     draft_hash_hex: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct CanonicalHeartbeatPlan {
+    schema_version: u32,
+    plugin_id: String,
+    contract_kind: String,
+    observed_at_utc: String,
+    priority: String,
+    reason: String,
+    candidate_post_ids: Vec<String>,
+    publish_allowed: bool,
+    human_review_required: bool,
+    safety_flags: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct HeartbeatOutput {
+    canonical_json: String,
+    plan_hash_hex: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct AbiEnvelope {
     schema_version: u32,
     status: String,
-    result: Option<DraftOutput>,
+    result: Option<Value>,
     error_code: Option<String>,
     error_message: Option<String>,
 }
@@ -111,9 +165,7 @@ unsafe fn write_output(output: Vec<u8>) -> u64 {
 }
 
 fn evaluate_abi_json(raw: &str) -> Vec<u8> {
-    let result = serde_json::from_str::<DraftInput>(raw)
-        .map_err(|error| format!("invalid_json: {error}"))
-        .and_then(evaluate);
+    let result = evaluate_request(raw);
     let envelope = match result {
         Ok(result) => AbiEnvelope {
             schema_version: ABI_SCHEMA_VERSION,
@@ -133,7 +185,30 @@ fn evaluate_abi_json(raw: &str) -> Vec<u8> {
     serde_json::to_vec(&envelope).unwrap_or_default()
 }
 
-fn evaluate(input: DraftInput) -> Result<DraftOutput, String> {
+fn evaluate_request(raw: &str) -> Result<Value, String> {
+    let value =
+        serde_json::from_str::<Value>(raw).map_err(|error| format!("invalid_json: {error}"))?;
+    let method = value
+        .get("host_method")
+        .and_then(Value::as_str)
+        .unwrap_or(PREPARE_DRAFT_METHOD);
+    let output = match method {
+        PREPARE_DRAFT_METHOD => {
+            let input = serde_json::from_value::<DraftInput>(value)
+                .map_err(|error| format!("invalid_draft_input: {error}"))?;
+            serde_json::to_value(evaluate_draft(input)?).map_err(|error| error.to_string())?
+        }
+        PLAN_HEARTBEAT_METHOD => {
+            let input = serde_json::from_value::<HeartbeatInput>(value)
+                .map_err(|error| format!("invalid_heartbeat_input: {error}"))?;
+            serde_json::to_value(evaluate_heartbeat(input)?).map_err(|error| error.to_string())?
+        }
+        _ => return Err("unsupported_method: unknown host_method".to_string()),
+    };
+    Ok(output)
+}
+
+fn evaluate_draft(input: DraftInput) -> Result<DraftOutput, String> {
     if input.schema_version != ABI_SCHEMA_VERSION {
         return Err("invalid_schema_version: expected 1".to_string());
     }
@@ -200,7 +275,7 @@ fn evaluate(input: DraftInput) -> Result<DraftOutput, String> {
     let canonical = CanonicalDraft {
         schema_version: ABI_SCHEMA_VERSION,
         plugin_id: PLUGIN_ID.to_string(),
-        contract_kind: CONTRACT_KIND.to_string(),
+        contract_kind: DRAFT_CONTRACT_KIND.to_string(),
         bulletin_id: bulletin_id.to_string(),
         release_tag: release_tag.to_string(),
         category: category.to_string(),
@@ -215,6 +290,106 @@ fn evaluate(input: DraftInput) -> Result<DraftOutput, String> {
         draft_hash_hex: sha256_hex(canonical_json.as_bytes()),
         canonical_json,
     })
+}
+
+fn evaluate_heartbeat(input: HeartbeatInput) -> Result<HeartbeatOutput, String> {
+    validate_identity(input.schema_version, &input.plugin_id)?;
+    if input.host_method != PLAN_HEARTBEAT_METHOD {
+        return Err("invalid_heartbeat_method".to_string());
+    }
+    validate_utc(&input.observed_at_utc, "observed_at_utc")?;
+    if input.allowed_topics.is_empty() || input.allowed_topics.len() > 16 {
+        return Err("allowed_topics must contain 1..16 items".to_string());
+    }
+    if input
+        .allowed_topics
+        .iter()
+        .any(|topic| topic.is_empty() || topic.len() > 64)
+    {
+        return Err("allowed_topics contains an invalid item".to_string());
+    }
+    if input.home.suggested_actions.len() > 32 {
+        return Err("suggested_actions exceeds its limit".to_string());
+    }
+    if input.feed.len() > 25 {
+        return Err("feed exceeds its page limit".to_string());
+    }
+
+    let mut candidates = Vec::new();
+    for post in &input.feed {
+        if post.post_id.is_empty()
+            || post.post_id.len() > 256
+            || post.title.is_empty()
+            || post.title.len() > 300
+            || post.author_name.is_empty()
+            || post.author_name.len() > 128
+            || post.submolt_name.is_empty()
+            || post.submolt_name.len() > 128
+            || post.comment_count > 1_000_000_000
+            || post.score < -1_000_000_000
+            || post.score > 1_000_000_000
+        {
+            return Err("feed contains an invalid post".to_string());
+        }
+        validate_utc(&post.created_at_utc, "feed.created_at_utc")?;
+        if post.is_verified && !post.is_spam && candidates.len() < 5 {
+            candidates.push(post.post_id.clone());
+        }
+    }
+
+    let (priority, reason) = if input.home.unread_notification_count > 0 {
+        (
+            "review_activity",
+            "Unread activity on the connected Moltbook account has priority.",
+        )
+    } else if !candidates.is_empty() {
+        (
+            "inspect_feed",
+            "Verified non-spam feed candidates are available for review.",
+        )
+    } else {
+        (
+            "idle",
+            "No unread activity or eligible feed candidate requires attention.",
+        )
+    };
+    let canonical = CanonicalHeartbeatPlan {
+        schema_version: ABI_SCHEMA_VERSION,
+        plugin_id: PLUGIN_ID.to_string(),
+        contract_kind: HEARTBEAT_CONTRACT_KIND.to_string(),
+        observed_at_utc: input.observed_at_utc,
+        priority: priority.to_string(),
+        reason: reason.to_string(),
+        candidate_post_ids: candidates,
+        publish_allowed: false,
+        human_review_required: true,
+        safety_flags: vec![
+            "remote_content_untrusted".to_string(),
+            "no_external_effect".to_string(),
+        ],
+    };
+    let canonical_json = serde_json::to_string(&canonical).map_err(|error| error.to_string())?;
+    Ok(HeartbeatOutput {
+        plan_hash_hex: sha256_hex(canonical_json.as_bytes()),
+        canonical_json,
+    })
+}
+
+fn validate_identity(schema_version: u32, plugin_id: &str) -> Result<(), String> {
+    if schema_version != ABI_SCHEMA_VERSION {
+        return Err("invalid_schema_version: expected 1".to_string());
+    }
+    if plugin_id.trim() != PLUGIN_ID {
+        return Err("invalid_plugin_id: unsupported plugin id".to_string());
+    }
+    Ok(())
+}
+
+fn validate_utc(value: &str, field: &str) -> Result<(), String> {
+    if value.len() < 20 || value.len() > 40 || !value.ends_with('Z') || !value.contains('T') {
+        return Err(format!("{field} must be canonical UTC"));
+    }
+    Ok(())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -261,7 +436,8 @@ mod tests {
         let second = evaluate_abi_json(&raw);
         assert_eq!(first, second);
         let envelope: AbiEnvelope = serde_json::from_slice(&first).expect("envelope parses");
-        let output = envelope.result.expect("draft output");
+        let output: DraftOutput =
+            serde_json::from_value(envelope.result.expect("draft output")).expect("draft parses");
         assert_eq!(envelope.status, "executed");
         assert_eq!(output.draft_hash_hex.len(), 64);
         assert!(output.canonical_json.contains("approval_required"));
@@ -271,8 +447,46 @@ mod tests {
     fn rejects_public_crypto_promotion() {
         let mut value = input();
         value.facts = vec!["Buy this crypto token for profit.".to_string()];
-        assert!(evaluate(value)
+        assert!(evaluate_draft(value)
             .expect_err("unsafe draft must reject")
             .contains("unsafe_public_content"));
+    }
+
+    #[test]
+    fn heartbeat_prioritizes_activity_without_external_effects() {
+        let input = HeartbeatInput {
+            schema_version: 1,
+            plugin_id: PLUGIN_ID.to_string(),
+            host_method: PLAN_HEARTBEAT_METHOD.to_string(),
+            observed_at_utc: "2026-07-29T10:00:00.000Z".to_string(),
+            allowed_topics: vec!["hivra-development".to_string()],
+            home: HeartbeatHomeInput {
+                unread_notification_count: 2,
+                suggested_actions: vec!["Read replies".to_string()],
+            },
+            feed: vec![HeartbeatFeedPostInput {
+                post_id: "post-1".to_string(),
+                title: "Reliable effects".to_string(),
+                author_name: "Agent".to_string(),
+                submolt_name: "general".to_string(),
+                score: 3,
+                comment_count: 1,
+                is_verified: true,
+                is_spam: false,
+                created_at_utc: "2026-07-29T09:59:00.000Z".to_string(),
+            }],
+        };
+        let raw = serde_json::to_string(&input).expect("input serializes");
+        let first = evaluate_abi_json(&raw);
+        let second = evaluate_abi_json(&raw);
+        assert_eq!(first, second);
+        let envelope: AbiEnvelope = serde_json::from_slice(&first).expect("envelope parses");
+        let output: HeartbeatOutput =
+            serde_json::from_value(envelope.result.expect("plan output")).expect("plan parses");
+        assert_eq!(output.plan_hash_hex.len(), 64);
+        assert!(output
+            .canonical_json
+            .contains("\"priority\":\"review_activity\""));
+        assert!(output.canonical_json.contains("\"publish_allowed\":false"));
     }
 }

@@ -1,6 +1,6 @@
 # Hivra Ambassador Drone Contract v1
 
-Status: draft-only prototype
+Status: deterministic draft and read-only heartbeat planning
 
 Plugin id: `hivra.contract.moltbook-ambassador.v1`
 
@@ -22,10 +22,25 @@ development facts. It is not the ledger, a contact card, a backup, or an
 implicit permission to publish. The producer must provide a stable
 `bulletin_id`; the host may later attach a signature and release metadata.
 
-The current capability is `content.draft.prepare`. It is intentionally not a
-network capability. Moltbook reads and writes require a future host external-
-effect contract with scoped credentials, rate limits, receipts, retries, and
-explicit approval.
+The current capabilities are `content.draft.prepare` and `content.feed.plan`.
+Neither is a network capability. The host may provide a normalized, bounded
+public Home/Feed observation to the heartbeat method; credentials and provider
+DTOs never enter WASM.
+
+## Heartbeat planning
+
+`plan_moltbook_heartbeat` accepts one explicit UTC observation time, local
+allowed-topic policy, bounded Home counters/actions, and up to 25 normalized
+public feed summaries. It deterministically returns one priority:
+
+- `review_activity` when unread account activity exists;
+- `inspect_feed` when verified non-spam candidates exist;
+- `idle` otherwise.
+
+The result contains at most five candidate post ids, always marks remote
+content untrusted, requires human review, and sets `publish_allowed: false`.
+It is a decision snapshot, not an effect, approval, reply, vote, follow, or
+publication receipt.
 
 ## Input
 
