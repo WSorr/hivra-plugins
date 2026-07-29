@@ -21,6 +21,7 @@ allowed_capabilities = {
     "content.draft.prepare",
     "content.engagement.plan",
     "content.feed.plan",
+    "content.reply.prepare",
     "exchange.read.bingx.market",
     "exchange.trade.bingx.futures",
 }

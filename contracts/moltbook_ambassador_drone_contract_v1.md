@@ -48,12 +48,14 @@ reply, vote, follow, or publication receipt.
 ## Engagement planning
 
 `plan_moltbook_engagement` accepts one explicitly selected, host-normalized
-post with at most 20 newest comments. It returns one proposal class:
+post with at most 20 newest comments and the connected actor name from the
+Capsule-scoped provider binding. It returns one proposal class:
 `reply_draft`, `comment_draft`, `upvote_candidate`, `follow_candidate`, or
 `no_action`.
 
 The current implementation never emits `follow_candidate`: one post is not
-longitudinal evidence. Own-post activity may produce `reply_draft`; verified,
+longitudinal evidence. Own-post activity may produce `reply_draft` only for
+the newest bounded comment not authored by the connected actor; verified,
 non-spam feed content may produce `comment_draft` or `upvote_candidate`.
 Locked, unverified, spam-marked, or weakly evidenced content produces
 `no_action`. No text is generated and no remote effect is authorized.

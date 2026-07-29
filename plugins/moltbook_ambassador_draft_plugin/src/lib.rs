@@ -102,6 +102,7 @@ struct EngagementInput {
     host_method: String,
     observed_at_utc: String,
     selection_kind: String,
+    actor_name: String,
     allowed_topics: Vec<String>,
     post: EngagementPostInput,
     comments: Vec<EngagementCommentInput>,
@@ -314,8 +315,7 @@ fn evaluate_request(raw: &str) -> Result<Value, String> {
         PREPARE_REPLY_METHOD => {
             let input = serde_json::from_value::<ReplyDraftInput>(value)
                 .map_err(|error| format!("invalid_reply_input: {error}"))?;
-            serde_json::to_value(evaluate_reply_draft(input)?)
-                .map_err(|error| error.to_string())?
+            serde_json::to_value(evaluate_reply_draft(input)?).map_err(|error| error.to_string())?
         }
         _ => return Err("unsupported_method: unknown host_method".to_string()),
     };
@@ -392,6 +392,10 @@ fn evaluate_engagement(input: EngagementInput) -> Result<EngagementOutput, Strin
     ) {
         return Err("selection_kind is invalid".to_string());
     }
+    let actor_name = input.actor_name.trim();
+    if actor_name.is_empty() || actor_name.len() > 128 {
+        return Err("actor_name is invalid".to_string());
+    }
     if input.allowed_topics.is_empty() || input.allowed_topics.len() > 16 {
         return Err("allowed_topics must contain 1..16 items".to_string());
     }
@@ -451,9 +455,10 @@ fn evaluate_engagement(input: EngagementInput) -> Result<EngagementOutput, Strin
         .iter()
         .map(|topic| topic.to_ascii_lowercase())
         .any(|topic| lowered.contains(&topic) || lowered.contains(&topic.replace('-', " ")));
-    let newest_comment = input
+    let newest_foreign_comment = input
         .comments
         .iter()
+        .filter(|comment| !comment.author_name.trim().eq_ignore_ascii_case(actor_name))
         .max_by(|left, right| left.created_at_utc.cmp(&right.created_at_utc));
 
     let (action_class, target_comment_id, reason) = if post.is_spam || !post.is_verified {
@@ -464,8 +469,10 @@ fn evaluate_engagement(input: EngagementInput) -> Result<EngagementOutput, Strin
         )
     } else if post.is_locked {
         ("no_action", None, "The selected Moltbook post is locked.")
-    } else if input.selection_kind == "own_activity" {
-        match newest_comment {
+    } else if input.selection_kind == "own_activity"
+        && post.author_name.trim().eq_ignore_ascii_case(actor_name)
+    {
+        match newest_foreign_comment {
             Some(comment) => (
                 "reply_draft",
                 Some(comment.comment_id.clone()),
@@ -474,9 +481,15 @@ fn evaluate_engagement(input: EngagementInput) -> Result<EngagementOutput, Strin
             None => (
                 "no_action",
                 None,
-                "No bounded comment is available to answer.",
+                "No bounded non-self comment is available to answer.",
             ),
         }
+    } else if input.selection_kind == "own_activity" {
+        (
+            "no_action",
+            None,
+            "The selected activity does not belong to the connected Moltbook actor.",
+        )
     } else if topic_match {
         (
             "comment_draft",
@@ -871,6 +884,7 @@ mod tests {
             host_method: PLAN_ENGAGEMENT_METHOD.to_string(),
             observed_at_utc: "2026-07-29T10:00:00.000Z".to_string(),
             selection_kind: "own_activity".to_string(),
+            actor_name: "HivraAmbassador".to_string(),
             allowed_topics: vec!["hivra-development".to_string()],
             post: EngagementPostInput {
                 post_id: "own-post-1".to_string(),
@@ -909,6 +923,59 @@ mod tests {
     }
 
     #[test]
+    fn engagement_never_targets_the_actor_own_latest_comment() {
+        let input = EngagementInput {
+            schema_version: 1,
+            plugin_id: PLUGIN_ID.to_string(),
+            host_method: PLAN_ENGAGEMENT_METHOD.to_string(),
+            observed_at_utc: "2026-07-29T10:00:00.000Z".to_string(),
+            selection_kind: "own_activity".to_string(),
+            actor_name: "hivra_ambassador".to_string(),
+            allowed_topics: vec!["hivra-development".to_string()],
+            post: EngagementPostInput {
+                post_id: "own-post-1".to_string(),
+                title: "Hivra development".to_string(),
+                content: "A bounded runtime update.".to_string(),
+                author_name: "hivra_ambassador".to_string(),
+                submolt_name: "general".to_string(),
+                score: 2,
+                is_verified: true,
+                is_spam: false,
+                is_locked: false,
+            },
+            comments: vec![
+                EngagementCommentInput {
+                    comment_id: "reader-question".to_string(),
+                    parent_comment_id: None,
+                    content: "How does migration preserve audit continuity?".to_string(),
+                    author_name: "Reader".to_string(),
+                    score: 1,
+                    created_at_utc: "2026-07-29T09:58:00.000Z".to_string(),
+                },
+                EngagementCommentInput {
+                    comment_id: "actor-old-reply".to_string(),
+                    parent_comment_id: Some("reader-question".to_string()),
+                    content: "The migration path keeps legacy reads available.".to_string(),
+                    author_name: "HIVRA_AMBASSADOR".to_string(),
+                    score: 1,
+                    created_at_utc: "2026-07-29T09:59:00.000Z".to_string(),
+                },
+            ],
+        };
+
+        let raw = serde_json::to_string(&input).expect("input serializes");
+        let envelope: AbiEnvelope =
+            serde_json::from_slice(&evaluate_abi_json(&raw)).expect("envelope parses");
+        let output: EngagementOutput =
+            serde_json::from_value(envelope.result.expect("plan output")).expect("plan parses");
+
+        assert!(output
+            .canonical_json
+            .contains("\"target_comment_id\":\"reader-question\""));
+        assert!(!output.canonical_json.contains("actor-old-reply"));
+    }
+
+    #[test]
     fn reply_draft_binds_reviewed_text_to_engagement_plan() {
         let input = ReplyDraftInput {
             schema_version: 1,
@@ -937,9 +1004,7 @@ mod tests {
         assert!(output
             .canonical_json
             .contains("\"target_comment_id\":\"comment-1\""));
-        assert!(output
-            .canonical_json
-            .contains("\"approval_required\":true"));
+        assert!(output.canonical_json.contains("\"approval_required\":true"));
     }
 
     #[test]
@@ -951,8 +1016,7 @@ mod tests {
             target_post_id: "post-1".to_string(),
             target_comment_id: None,
             engagement_plan_hash_hex:
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                    .to_string(),
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
             reviewed_body: "Internal hivra-effect:reply-1".to_string(),
         };
         assert!(evaluate_reply_draft(input)
