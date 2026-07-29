@@ -28,7 +28,19 @@ struct DraftInput {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct HeartbeatHomeInput {
     unread_notification_count: u32,
+    activity_on_own_posts: Vec<HeartbeatActivityInput>,
     suggested_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct HeartbeatActivityInput {
+    post_id: String,
+    post_title: String,
+    submolt_name: String,
+    new_notification_count: u32,
+    latest_at_utc: String,
+    latest_commenters: Vec<String>,
+    preview: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -311,11 +323,39 @@ fn evaluate_heartbeat(input: HeartbeatInput) -> Result<HeartbeatOutput, String> 
     if input.home.suggested_actions.len() > 32 {
         return Err("suggested_actions exceeds its limit".to_string());
     }
+    if input.home.activity_on_own_posts.len() > 32 {
+        return Err("activity_on_own_posts exceeds its limit".to_string());
+    }
     if input.feed.len() > 25 {
         return Err("feed exceeds its page limit".to_string());
     }
 
-    let mut candidates = Vec::new();
+    let mut activity_candidates = Vec::new();
+    for activity in &input.home.activity_on_own_posts {
+        if activity.post_id.is_empty()
+            || activity.post_id.len() > 256
+            || activity.post_title.is_empty()
+            || activity.post_title.len() > 300
+            || activity.submolt_name.is_empty()
+            || activity.submolt_name.len() > 128
+            || activity.new_notification_count == 0
+            || activity.new_notification_count > 1_000_000_000
+            || activity.latest_commenters.len() > 32
+            || activity
+                .latest_commenters
+                .iter()
+                .any(|name| name.is_empty() || name.len() > 128)
+            || activity.preview.len() > 2_000
+        {
+            return Err("activity_on_own_posts contains an invalid item".to_string());
+        }
+        validate_utc(&activity.latest_at_utc, "activity.latest_at_utc")?;
+        if !activity_candidates.contains(&activity.post_id) && activity_candidates.len() < 5 {
+            activity_candidates.push(activity.post_id.clone());
+        }
+    }
+
+    let mut feed_candidates = Vec::new();
     for post in &input.feed {
         if post.post_id.is_empty()
             || post.post_id.len() > 256
@@ -332,25 +372,28 @@ fn evaluate_heartbeat(input: HeartbeatInput) -> Result<HeartbeatOutput, String> 
             return Err("feed contains an invalid post".to_string());
         }
         validate_utc(&post.created_at_utc, "feed.created_at_utc")?;
-        if post.is_verified && !post.is_spam && candidates.len() < 5 {
-            candidates.push(post.post_id.clone());
+        if post.is_verified && !post.is_spam && feed_candidates.len() < 5 {
+            feed_candidates.push(post.post_id.clone());
         }
     }
 
-    let (priority, reason) = if input.home.unread_notification_count > 0 {
+    let (priority, reason, candidates) = if input.home.unread_notification_count > 0 {
         (
             "review_activity",
             "Unread activity on the connected Moltbook account has priority.",
+            activity_candidates,
         )
-    } else if !candidates.is_empty() {
+    } else if !feed_candidates.is_empty() {
         (
             "inspect_feed",
             "Verified non-spam feed candidates are available for review.",
+            feed_candidates,
         )
     } else {
         (
             "idle",
             "No unread activity or eligible feed candidate requires attention.",
+            Vec::new(),
         )
     };
     let canonical = CanonicalHeartbeatPlan {
@@ -462,6 +505,15 @@ mod tests {
             allowed_topics: vec!["hivra-development".to_string()],
             home: HeartbeatHomeInput {
                 unread_notification_count: 2,
+                activity_on_own_posts: vec![HeartbeatActivityInput {
+                    post_id: "own-post-1".to_string(),
+                    post_title: "Hivra update".to_string(),
+                    submolt_name: "general".to_string(),
+                    new_notification_count: 2,
+                    latest_at_utc: "2026-07-29T09:58:00.000Z".to_string(),
+                    latest_commenters: vec!["Reader".to_string()],
+                    preview: "Reader replied".to_string(),
+                }],
                 suggested_actions: vec!["Read replies".to_string()],
             },
             feed: vec![HeartbeatFeedPostInput {
@@ -487,6 +539,9 @@ mod tests {
         assert!(output
             .canonical_json
             .contains("\"priority\":\"review_activity\""));
+        assert!(output
+            .canonical_json
+            .contains("\"candidate_post_ids\":[\"own-post-1\"]"));
         assert!(output.canonical_json.contains("\"publish_allowed\":false"));
     }
 }

@@ -5,6 +5,10 @@ and planning one bounded Moltbook heartbeat from host-normalized public
 observations. It does not call Moltbook, read Capsule state, or contain
 credentials.
 
+Structured activity on the agent's own posts takes priority over general feed
+inspection. The heartbeat plan returns exact post ids for review, but remains
+read-only and cannot reply, vote, follow, or publish.
+
 The input bulletin carries a stable bulletin id, release tag, public category,
 and bounded ordered facts. The plugin turns those facts into a reviewable draft
 and always requires explicit human approval before any future publication.

@@ -30,17 +30,20 @@ DTOs never enter WASM.
 ## Heartbeat planning
 
 `plan_moltbook_heartbeat` accepts one explicit UTC observation time, local
-allowed-topic policy, bounded Home counters/actions, and up to 25 normalized
-public feed summaries. It deterministically returns one priority:
+allowed-topic policy, bounded Home counters/actions, structured activity on
+the agent's own posts, and up to 25 normalized public feed summaries. It
+deterministically returns one priority:
 
 - `review_activity` when unread account activity exists;
 - `inspect_feed` when verified non-spam candidates exist;
 - `idle` otherwise.
 
-The result contains at most five candidate post ids, always marks remote
-content untrusted, requires human review, and sets `publish_allowed: false`.
-It is a decision snapshot, not an effect, approval, reply, vote, follow, or
-publication receipt.
+The result contains at most five candidate post ids. For `review_activity`
+these ids come only from structured activity on the agent's own posts; for
+`inspect_feed` they come only from verified non-spam feed candidates. The
+result always marks remote content untrusted, requires human review, and sets
+`publish_allowed: false`. It is a decision snapshot, not an effect, approval,
+reply, vote, follow, or publication receipt.
 
 ## Input
 
