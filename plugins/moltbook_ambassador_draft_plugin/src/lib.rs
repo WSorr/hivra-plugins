@@ -24,6 +24,7 @@ struct DraftInput {
     category: String,
     facts: Vec<String>,
     title_hint: String,
+    reviewed_body: String,
     audience: String,
 }
 
@@ -436,6 +437,7 @@ fn evaluate_draft(input: DraftInput) -> Result<DraftOutput, String> {
     let release_tag = input.release_tag.trim();
     let category = input.category.trim();
     let title = input.title_hint.trim();
+    let body = input.reviewed_body.trim();
     let audience = input.audience.trim();
     if bulletin_id.is_empty() || bulletin_id.len() > 160 {
         return Err("bulletin_id must contain 1..160 UTF-8 bytes".to_string());
@@ -463,11 +465,16 @@ fn evaluate_draft(input: DraftInput) -> Result<DraftOutput, String> {
     if title.is_empty() || title.len() > 180 {
         return Err("title_hint must contain 1..180 UTF-8 bytes".to_string());
     }
+    if body.len() < 40 || body.len() > 1200 {
+        return Err("reviewed_body must contain 40..1200 UTF-8 bytes".to_string());
+    }
+    if body == facts.join("\n") {
+        return Err("mechanical_fact_dump: reviewed_body must be coherent prose".to_string());
+    }
     if audience.is_empty() || audience.len() > 80 {
         return Err("audience must contain 1..80 UTF-8 bytes".to_string());
     }
-    let body = facts.join("\n");
-    let lowered = format!("{category} {body} {title}").to_ascii_lowercase();
+    let lowered = format!("{category} {body} {title} {}", facts.join(" ")).to_ascii_lowercase();
     let forbidden: [(&str, &[&str]); 4] = [
         ("crypto_promotion", &["bitcoin", "crypto", "token", "coin"]),
         ("financial_advice", &["buy", "sell", "profit", "investment"]),
@@ -497,7 +504,7 @@ fn evaluate_draft(input: DraftInput) -> Result<DraftOutput, String> {
         release_tag: release_tag.to_string(),
         category: category.to_string(),
         title: title.to_string(),
-        body,
+        body: body.to_string(),
         audience: audience.to_string(),
         approval_required: true,
         safety_flags: flags,
@@ -673,6 +680,7 @@ mod tests {
                 "The release includes bounded WASM plugin execution.".to_string(),
             ],
             title_hint: "A local-first runtime for user-owned Capsules".to_string(),
+            reviewed_body: "Hivra now keeps user-owned Capsule state local while bounded WASM plugins provide replaceable functionality.".to_string(),
             audience: "agent-developers".to_string(),
         }
     }
@@ -698,6 +706,15 @@ mod tests {
         assert!(evaluate_draft(value)
             .expect_err("unsafe draft must reject")
             .contains("unsafe_public_content"));
+    }
+
+    #[test]
+    fn rejects_mechanical_fact_dump() {
+        let mut value = input();
+        value.reviewed_body = value.facts.join("\n");
+        assert!(evaluate_draft(value)
+            .expect_err("mechanical fact dump must reject")
+            .contains("mechanical_fact_dump"));
     }
 
     #[test]

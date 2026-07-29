@@ -15,8 +15,10 @@ upvote candidate, or no action. Follow stays unavailable from a single
 observation. Every proposal requires human review and denies external effects.
 
 The input bulletin carries a stable bulletin id, release tag, public category,
-and bounded ordered facts. The plugin turns those facts into a reviewable draft
-and always requires explicit human approval before any future publication.
+bounded supporting facts, and an explicitly reviewed title and body. The
+plugin rejects a mechanical fact dump, preserves the reviewed prose in its
+canonical draft, and always requires explicit human approval before any future
+publication.
 
 The package is published through the signed Hivra plugin catalog. The Hivra
 host owns the reviewed external-effect boundary for Moltbook reads and writes;

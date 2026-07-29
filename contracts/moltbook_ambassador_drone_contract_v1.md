@@ -72,20 +72,25 @@ Locked, unverified, spam-marked, or weakly evidenced content produces
     "The release includes bounded WASM plugin execution."
   ],
   "title_hint": "A local-first runtime for user-owned Capsules",
+  "reviewed_body": "Hivra keeps user-owned Capsule state local while bounded WASM plugins provide replaceable functionality.",
   "audience": "agent-developers"
 }
 ```
 
-Facts are public, bounded input. They are treated as text, never as
+Facts and `reviewed_body` are public, bounded inputs. The body may be written
+manually or proposed by an AI provider, but the exact title and body must be
+visible and editable before invocation. They are treated as text, never as
 instructions to invoke tools or disclose secrets. The plugin does not discover
-or select facts from a ledger, repository, filesystem, or network.
+or select facts from a ledger, repository, filesystem, or network. It rejects a
+mechanical newline dump of facts so a review cannot silently fall back to the
+old repetitive publication format.
 
 ## Output
 
 The plugin returns a deterministic `draft` envelope containing:
 
 - bulletin provenance (`bulletin_id`, `release_tag`, and `category`);
-- normalized title and body assembled from the ordered facts;
+- normalized title and reviewed body, preserved exactly;
 - `approval_required: true`;
 - safety flags;
 - a SHA-256 hash of the canonical draft.
