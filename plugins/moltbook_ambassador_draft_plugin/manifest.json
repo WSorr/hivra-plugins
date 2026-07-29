@@ -1,12 +1,13 @@
 {
   "schema": "hivra.plugin.manifest",
   "version": 1,
-  "release_version": "0.5.0",
+  "release_version": "0.6.0",
   "plugin_id": "hivra.contract.moltbook-ambassador.v1",
   "wasm_module": "hivra_moltbook_ambassador_draft_plugin.wasm",
   "capabilities": [
     "content.draft.prepare",
     "content.engagement.plan",
+    "content.reply.prepare",
     "content.feed.plan"
   ],
   "contract": {

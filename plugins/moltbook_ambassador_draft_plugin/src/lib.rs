@@ -6,9 +6,11 @@ pub const PLUGIN_ID: &str = "hivra.contract.moltbook-ambassador.v1";
 const DRAFT_CONTRACT_KIND: &str = "moltbook_ambassador_draft";
 const HEARTBEAT_CONTRACT_KIND: &str = "moltbook_ambassador_heartbeat_plan";
 const ENGAGEMENT_CONTRACT_KIND: &str = "moltbook_ambassador_engagement_plan";
+const REPLY_DRAFT_CONTRACT_KIND: &str = "moltbook_ambassador_reply_draft";
 const PREPARE_DRAFT_METHOD: &str = "prepare_moltbook_draft";
 const PLAN_HEARTBEAT_METHOD: &str = "plan_moltbook_heartbeat";
 const PLAN_ENGAGEMENT_METHOD: &str = "plan_moltbook_engagement";
+const PREPARE_REPLY_METHOD: &str = "prepare_moltbook_reply";
 const ABI_SCHEMA_VERSION: u32 = 1;
 #[cfg(target_arch = "wasm32")]
 const MAX_ABI_INPUT_BYTES: usize = 64 * 1024;
@@ -168,6 +170,36 @@ struct EngagementOutput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ReplyDraftInput {
+    schema_version: u32,
+    plugin_id: String,
+    host_method: String,
+    target_post_id: String,
+    target_comment_id: Option<String>,
+    engagement_plan_hash_hex: String,
+    reviewed_body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct CanonicalReplyDraft {
+    schema_version: u32,
+    plugin_id: String,
+    contract_kind: String,
+    target_post_id: String,
+    target_comment_id: Option<String>,
+    engagement_plan_hash_hex: String,
+    body: String,
+    approval_required: bool,
+    safety_flags: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ReplyDraftOutput {
+    canonical_json: String,
+    draft_hash_hex: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct AbiEnvelope {
     schema_version: u32,
     status: String,
@@ -279,9 +311,73 @@ fn evaluate_request(raw: &str) -> Result<Value, String> {
                 .map_err(|error| format!("invalid_engagement_input: {error}"))?;
             serde_json::to_value(evaluate_engagement(input)?).map_err(|error| error.to_string())?
         }
+        PREPARE_REPLY_METHOD => {
+            let input = serde_json::from_value::<ReplyDraftInput>(value)
+                .map_err(|error| format!("invalid_reply_input: {error}"))?;
+            serde_json::to_value(evaluate_reply_draft(input)?)
+                .map_err(|error| error.to_string())?
+        }
         _ => return Err("unsupported_method: unknown host_method".to_string()),
     };
     Ok(output)
+}
+
+fn evaluate_reply_draft(input: ReplyDraftInput) -> Result<ReplyDraftOutput, String> {
+    validate_identity(input.schema_version, &input.plugin_id)?;
+    if input.host_method != PREPARE_REPLY_METHOD {
+        return Err("invalid_reply_method".to_string());
+    }
+    if input.target_post_id.is_empty() || input.target_post_id.len() > 256 {
+        return Err("target_post_id is invalid".to_string());
+    }
+    if input
+        .target_comment_id
+        .as_ref()
+        .is_some_and(|id| id.is_empty() || id.len() > 256)
+    {
+        return Err("target_comment_id is invalid".to_string());
+    }
+    if input.engagement_plan_hash_hex.len() != 64
+        || !input
+            .engagement_plan_hash_hex
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err("engagement_plan_hash_hex is invalid".to_string());
+    }
+    let body = input.reviewed_body.trim();
+    if body.is_empty() || body.len() > 2_000 {
+        return Err("reviewed_body must contain 1..2000 characters".to_string());
+    }
+    let lowered = body.to_ascii_lowercase();
+    if lowered.contains("hivra-effect:")
+        || lowered.contains("api key")
+        || lowered.contains("private key")
+        || lowered.contains("seed phrase")
+    {
+        return Err("unsafe_reply_content".to_string());
+    }
+
+    let canonical = CanonicalReplyDraft {
+        schema_version: ABI_SCHEMA_VERSION,
+        plugin_id: PLUGIN_ID.to_string(),
+        contract_kind: REPLY_DRAFT_CONTRACT_KIND.to_string(),
+        target_post_id: input.target_post_id,
+        target_comment_id: input.target_comment_id,
+        engagement_plan_hash_hex: input.engagement_plan_hash_hex,
+        body: body.to_string(),
+        approval_required: true,
+        safety_flags: vec![
+            "remote_context_untrusted".to_string(),
+            "reviewed_text_preserved".to_string(),
+            "no_external_effect".to_string(),
+        ],
+    };
+    let canonical_json = serde_json::to_string(&canonical).map_err(|error| error.to_string())?;
+    Ok(ReplyDraftOutput {
+        draft_hash_hex: sha256_hex(canonical_json.as_bytes()),
+        canonical_json,
+    })
 }
 
 fn evaluate_engagement(input: EngagementInput) -> Result<EngagementOutput, String> {
@@ -810,5 +906,57 @@ mod tests {
             .canonical_json
             .contains("\"target_comment_id\":\"comment-1\""));
         assert!(output.canonical_json.contains("\"publish_allowed\":false"));
+    }
+
+    #[test]
+    fn reply_draft_binds_reviewed_text_to_engagement_plan() {
+        let input = ReplyDraftInput {
+            schema_version: 1,
+            plugin_id: PLUGIN_ID.to_string(),
+            host_method: PREPARE_REPLY_METHOD.to_string(),
+            target_post_id: "post-1".to_string(),
+            target_comment_id: Some("comment-1".to_string()),
+            engagement_plan_hash_hex:
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .to_string(),
+            reviewed_body:
+                "The runtime keeps durable Capsule state local while the Moltbook adapter owns only the external effect."
+                    .to_string(),
+        };
+        let raw = serde_json::to_string(&input).expect("input serializes");
+        let first = evaluate_abi_json(&raw);
+        let second = evaluate_abi_json(&raw);
+        assert_eq!(first, second);
+        let envelope: AbiEnvelope = serde_json::from_slice(&first).expect("envelope parses");
+        let output: ReplyDraftOutput =
+            serde_json::from_value(envelope.result.expect("reply output")).expect("reply parses");
+        assert_eq!(output.draft_hash_hex.len(), 64);
+        assert!(output
+            .canonical_json
+            .contains("\"contract_kind\":\"moltbook_ambassador_reply_draft\""));
+        assert!(output
+            .canonical_json
+            .contains("\"target_comment_id\":\"comment-1\""));
+        assert!(output
+            .canonical_json
+            .contains("\"approval_required\":true"));
+    }
+
+    #[test]
+    fn reply_draft_rejects_internal_operation_markers() {
+        let input = ReplyDraftInput {
+            schema_version: 1,
+            plugin_id: PLUGIN_ID.to_string(),
+            host_method: PREPARE_REPLY_METHOD.to_string(),
+            target_post_id: "post-1".to_string(),
+            target_comment_id: None,
+            engagement_plan_hash_hex:
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .to_string(),
+            reviewed_body: "Internal hivra-effect:reply-1".to_string(),
+        };
+        assert!(evaluate_reply_draft(input)
+            .expect_err("unsafe reply must reject")
+            .contains("unsafe_reply_content"));
     }
 }

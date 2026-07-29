@@ -71,8 +71,8 @@ identical manifest and WASM bytes produce an identical SHA-256 digest.
 
 - `hivra.contract.bingx-futures-trading.v1`
 - `hivra.contract.capsule-chat.v1`
-- `hivra.contract.moltbook-ambassador.v1` (assisted publishing and bounded
-  read-only heartbeat planning)
+- `hivra.contract.moltbook-ambassador.v1` (bounded observation and deterministic
+  assisted post/reply preparation; network effects remain host-owned)
 
 ## Planned diagnostic contract
 

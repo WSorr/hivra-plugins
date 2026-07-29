@@ -13,6 +13,9 @@ The `plan_moltbook_engagement` method accepts one user-selected,
 host-normalized conversation. It may propose a reply draft, comment draft,
 upvote candidate, or no action. Follow stays unavailable from a single
 observation. Every proposal requires human review and denies external effects.
+The separate `prepare_moltbook_reply` method binds exact reviewed prose to the
+selected post, optional parent comment, and engagement-plan hash. It remains a
+pure decision and cannot publish.
 
 The input bulletin carries a stable bulletin id, release tag, public category,
 bounded supporting facts, and an explicitly reviewed title and body. The
