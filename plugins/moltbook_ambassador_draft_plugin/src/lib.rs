@@ -5,8 +5,10 @@ use sha2::{Digest, Sha256};
 pub const PLUGIN_ID: &str = "hivra.contract.moltbook-ambassador.v1";
 const DRAFT_CONTRACT_KIND: &str = "moltbook_ambassador_draft";
 const HEARTBEAT_CONTRACT_KIND: &str = "moltbook_ambassador_heartbeat_plan";
+const ENGAGEMENT_CONTRACT_KIND: &str = "moltbook_ambassador_engagement_plan";
 const PREPARE_DRAFT_METHOD: &str = "prepare_moltbook_draft";
 const PLAN_HEARTBEAT_METHOD: &str = "plan_moltbook_heartbeat";
+const PLAN_ENGAGEMENT_METHOD: &str = "plan_moltbook_engagement";
 const ABI_SCHEMA_VERSION: u32 = 1;
 #[cfg(target_arch = "wasm32")]
 const MAX_ABI_INPUT_BYTES: usize = 64 * 1024;
@@ -67,6 +69,41 @@ struct HeartbeatInput {
     feed: Vec<HeartbeatFeedPostInput>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct EngagementPostInput {
+    post_id: String,
+    title: String,
+    content: String,
+    author_name: String,
+    submolt_name: String,
+    score: i64,
+    is_verified: bool,
+    is_spam: bool,
+    is_locked: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct EngagementCommentInput {
+    comment_id: String,
+    parent_comment_id: Option<String>,
+    content: String,
+    author_name: String,
+    score: i64,
+    created_at_utc: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct EngagementInput {
+    schema_version: u32,
+    plugin_id: String,
+    host_method: String,
+    observed_at_utc: String,
+    selection_kind: String,
+    allowed_topics: Vec<String>,
+    post: EngagementPostInput,
+    comments: Vec<EngagementCommentInput>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct CanonicalDraft {
     schema_version: u32,
@@ -104,6 +141,27 @@ struct CanonicalHeartbeatPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct HeartbeatOutput {
+    canonical_json: String,
+    plan_hash_hex: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct CanonicalEngagementPlan {
+    schema_version: u32,
+    plugin_id: String,
+    contract_kind: String,
+    observed_at_utc: String,
+    action_class: String,
+    target_post_id: String,
+    target_comment_id: Option<String>,
+    reason: String,
+    publish_allowed: bool,
+    human_review_required: bool,
+    safety_flags: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct EngagementOutput {
     canonical_json: String,
     plan_hash_hex: String,
 }
@@ -215,9 +273,156 @@ fn evaluate_request(raw: &str) -> Result<Value, String> {
                 .map_err(|error| format!("invalid_heartbeat_input: {error}"))?;
             serde_json::to_value(evaluate_heartbeat(input)?).map_err(|error| error.to_string())?
         }
+        PLAN_ENGAGEMENT_METHOD => {
+            let input = serde_json::from_value::<EngagementInput>(value)
+                .map_err(|error| format!("invalid_engagement_input: {error}"))?;
+            serde_json::to_value(evaluate_engagement(input)?).map_err(|error| error.to_string())?
+        }
         _ => return Err("unsupported_method: unknown host_method".to_string()),
     };
     Ok(output)
+}
+
+fn evaluate_engagement(input: EngagementInput) -> Result<EngagementOutput, String> {
+    validate_identity(input.schema_version, &input.plugin_id)?;
+    if input.host_method != PLAN_ENGAGEMENT_METHOD {
+        return Err("invalid_engagement_method".to_string());
+    }
+    validate_utc(&input.observed_at_utc, "observed_at_utc")?;
+    if !matches!(
+        input.selection_kind.as_str(),
+        "own_activity" | "feed_candidate"
+    ) {
+        return Err("selection_kind is invalid".to_string());
+    }
+    if input.allowed_topics.is_empty() || input.allowed_topics.len() > 16 {
+        return Err("allowed_topics must contain 1..16 items".to_string());
+    }
+    if input.allowed_topics.iter().any(|topic| {
+        topic.is_empty()
+            || topic.len() > 64
+            || !topic
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    }) {
+        return Err("allowed_topics contains an invalid item".to_string());
+    }
+    let post = &input.post;
+    if post.post_id.is_empty()
+        || post.post_id.len() > 256
+        || post.title.is_empty()
+        || post.title.len() > 300
+        || post.content.len() > 40_000
+        || post.author_name.is_empty()
+        || post.author_name.len() > 128
+        || post.submolt_name.is_empty()
+        || post.submolt_name.len() > 128
+        || post.score < -1_000_000_000
+        || post.score > 1_000_000_000
+    {
+        return Err("engagement post is invalid".to_string());
+    }
+    if input.comments.len() > 20 {
+        return Err("engagement comments exceed their limit".to_string());
+    }
+    let mut comment_ids = Vec::new();
+    for comment in &input.comments {
+        if comment.comment_id.is_empty()
+            || comment.comment_id.len() > 256
+            || comment
+                .parent_comment_id
+                .as_ref()
+                .is_some_and(|id| id.is_empty() || id.len() > 256)
+            || comment.content.is_empty()
+            || comment.content.len() > 12_000
+            || comment.author_name.is_empty()
+            || comment.author_name.len() > 128
+            || comment.score < -1_000_000_000
+            || comment.score > 1_000_000_000
+            || comment_ids.contains(&comment.comment_id)
+        {
+            return Err("engagement comments contain an invalid item".to_string());
+        }
+        validate_utc(&comment.created_at_utc, "comment.created_at_utc")?;
+        comment_ids.push(comment.comment_id.clone());
+    }
+
+    let lowered =
+        format!("{} {} {}", post.title, post.content, post.submolt_name).to_ascii_lowercase();
+    let topic_match = input
+        .allowed_topics
+        .iter()
+        .map(|topic| topic.to_ascii_lowercase())
+        .any(|topic| lowered.contains(&topic) || lowered.contains(&topic.replace('-', " ")));
+    let newest_comment = input
+        .comments
+        .iter()
+        .max_by(|left, right| left.created_at_utc.cmp(&right.created_at_utc));
+
+    let (action_class, target_comment_id, reason) = if post.is_spam || !post.is_verified {
+        (
+            "no_action",
+            None,
+            "Unverified or spam-marked remote content is not eligible.",
+        )
+    } else if post.is_locked {
+        ("no_action", None, "The selected Moltbook post is locked.")
+    } else if input.selection_kind == "own_activity" {
+        match newest_comment {
+            Some(comment) => (
+                "reply_draft",
+                Some(comment.comment_id.clone()),
+                "New activity on an owned post is eligible for a reviewed reply draft.",
+            ),
+            None => (
+                "no_action",
+                None,
+                "No bounded comment is available to answer.",
+            ),
+        }
+    } else if topic_match {
+        (
+            "comment_draft",
+            None,
+            "Verified feed content matches the local allowed-topic policy.",
+        )
+    } else if post.score >= 5 {
+        (
+            "upvote_candidate",
+            None,
+            "Verified non-spam content has positive community evidence but no topic match.",
+        )
+    } else {
+        (
+            "no_action",
+            None,
+            "The selected post has insufficient bounded evidence for engagement.",
+        )
+    };
+
+    let canonical = CanonicalEngagementPlan {
+        schema_version: ABI_SCHEMA_VERSION,
+        plugin_id: PLUGIN_ID.to_string(),
+        contract_kind: ENGAGEMENT_CONTRACT_KIND.to_string(),
+        observed_at_utc: input.observed_at_utc,
+        action_class: action_class.to_string(),
+        target_post_id: post.post_id.clone(),
+        target_comment_id,
+        reason: reason.to_string(),
+        publish_allowed: false,
+        human_review_required: true,
+        safety_flags: vec![
+            "remote_content_untrusted".to_string(),
+            "no_external_effect".to_string(),
+            "ai_text_not_generated".to_string(),
+            "follow_requires_longitudinal_evidence".to_string(),
+        ],
+    };
+    let canonical_json = serde_json::to_string(&canonical).map_err(|error| error.to_string())?;
+    Ok(EngagementOutput {
+        plan_hash_hex: sha256_hex(canonical_json.as_bytes()),
+        canonical_json,
+    })
 }
 
 fn evaluate_draft(input: DraftInput) -> Result<DraftOutput, String> {
@@ -542,6 +747,51 @@ mod tests {
         assert!(output
             .canonical_json
             .contains("\"candidate_post_ids\":[\"own-post-1\"]"));
+        assert!(output.canonical_json.contains("\"publish_allowed\":false"));
+    }
+
+    #[test]
+    fn engagement_proposes_reply_without_external_effect() {
+        let input = EngagementInput {
+            schema_version: 1,
+            plugin_id: PLUGIN_ID.to_string(),
+            host_method: PLAN_ENGAGEMENT_METHOD.to_string(),
+            observed_at_utc: "2026-07-29T10:00:00.000Z".to_string(),
+            selection_kind: "own_activity".to_string(),
+            allowed_topics: vec!["hivra-development".to_string()],
+            post: EngagementPostInput {
+                post_id: "own-post-1".to_string(),
+                title: "Hivra development".to_string(),
+                content: "A bounded runtime update.".to_string(),
+                author_name: "HivraAmbassador".to_string(),
+                submolt_name: "general".to_string(),
+                score: 2,
+                is_verified: true,
+                is_spam: false,
+                is_locked: false,
+            },
+            comments: vec![EngagementCommentInput {
+                comment_id: "comment-1".to_string(),
+                parent_comment_id: None,
+                content: "How does the runtime stay local-first?".to_string(),
+                author_name: "Reader".to_string(),
+                score: 1,
+                created_at_utc: "2026-07-29T09:59:00.000Z".to_string(),
+            }],
+        };
+        let raw = serde_json::to_string(&input).expect("input serializes");
+        let first = evaluate_abi_json(&raw);
+        let second = evaluate_abi_json(&raw);
+        assert_eq!(first, second);
+        let envelope: AbiEnvelope = serde_json::from_slice(&first).expect("envelope parses");
+        let output: EngagementOutput =
+            serde_json::from_value(envelope.result.expect("plan output")).expect("plan parses");
+        assert!(output
+            .canonical_json
+            .contains("\"action_class\":\"reply_draft\""));
+        assert!(output
+            .canonical_json
+            .contains("\"target_comment_id\":\"comment-1\""));
         assert!(output.canonical_json.contains("\"publish_allowed\":false"));
     }
 }

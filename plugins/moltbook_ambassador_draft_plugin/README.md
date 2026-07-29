@@ -9,6 +9,11 @@ Structured activity on the agent's own posts takes priority over general feed
 inspection. The heartbeat plan returns exact post ids for review, but remains
 read-only and cannot reply, vote, follow, or publish.
 
+The `plan_moltbook_engagement` method accepts one user-selected,
+host-normalized conversation. It may propose a reply draft, comment draft,
+upvote candidate, or no action. Follow stays unavailable from a single
+observation. Every proposal requires human review and denies external effects.
+
 The input bulletin carries a stable bulletin id, release tag, public category,
 and bounded ordered facts. The plugin turns those facts into a reviewable draft
 and always requires explicit human approval before any future publication.

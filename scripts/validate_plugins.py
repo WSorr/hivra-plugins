@@ -19,6 +19,7 @@ seen_ids: set[str] = set()
 allowed_capabilities = {
     "consensus_guard.read",
     "content.draft.prepare",
+    "content.engagement.plan",
     "content.feed.plan",
     "exchange.read.bingx.market",
     "exchange.trade.bingx.futures",

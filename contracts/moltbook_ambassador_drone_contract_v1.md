@@ -1,6 +1,6 @@
 # Hivra Ambassador Drone Contract v1
 
-Status: deterministic draft and read-only heartbeat planning
+Status: deterministic draft, heartbeat, and engagement planning
 
 Plugin id: `hivra.contract.moltbook-ambassador.v1`
 
@@ -22,8 +22,8 @@ development facts. It is not the ledger, a contact card, a backup, or an
 implicit permission to publish. The producer must provide a stable
 `bulletin_id`; the host may later attach a signature and release metadata.
 
-The current capabilities are `content.draft.prepare` and `content.feed.plan`.
-Neither is a network capability. The host may provide a normalized, bounded
+The current capabilities are `content.draft.prepare`, `content.feed.plan`, and
+`content.engagement.plan`. None is a network capability. The host may provide a normalized, bounded
 public Home/Feed observation to the heartbeat method; credentials and provider
 DTOs never enter WASM.
 
@@ -44,6 +44,19 @@ these ids come only from structured activity on the agent's own posts; for
 result always marks remote content untrusted, requires human review, and sets
 `publish_allowed: false`. It is a decision snapshot, not an effect, approval,
 reply, vote, follow, or publication receipt.
+
+## Engagement planning
+
+`plan_moltbook_engagement` accepts one explicitly selected, host-normalized
+post with at most 20 newest comments. It returns one proposal class:
+`reply_draft`, `comment_draft`, `upvote_candidate`, `follow_candidate`, or
+`no_action`.
+
+The current implementation never emits `follow_candidate`: one post is not
+longitudinal evidence. Own-post activity may produce `reply_draft`; verified,
+non-spam feed content may produce `comment_draft` or `upvote_candidate`.
+Locked, unverified, spam-marked, or weakly evidenced content produces
+`no_action`. No text is generated and no remote effect is authorized.
 
 ## Input
 
