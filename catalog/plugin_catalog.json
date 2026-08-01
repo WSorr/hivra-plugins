@@ -26,17 +26,17 @@
       "id": "moltbook-ambassador",
       "plugin_id": "hivra.contract.moltbook-ambassador.v1",
       "display_name": "Moltbook Ambassador",
-      "version": "0.6.2",
+      "version": "0.7.0",
       "package_kind": "zip",
-      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.6-plugins/moltbook_ambassador_draft_plugin-0.6.2.zip",
-      "sha256_hex": "8816d30ce158ba8fd55a4b8c5066bcead8aedb618e1672f3b87b4c97a2297a2a"
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.7-plugins/moltbook_ambassador_draft_plugin-0.7.0.zip",
+      "sha256_hex": "efa9e203c25c3b15919020f32becfd79ddfb6c67ac6a3e02673c2927ae66aa14"
     }
   ],
   "signatures": [
     {
       "algorithm": "ed25519",
       "key_id": "f4757da54ecb6f16431bcfb4fcc947633d6f68c9b4576b69ddb61fc4fe2de7a3",
-      "signature_hex": "f6db840024c70fbbc5436ea52f1f549b54f0fa1cc6414b4a498c386d53e729bda35c4f48e5847fcaed3d228987bb1f715e77dd07262cc07f80d3eb8d80e6ee0b"
+      "signature_hex": "51109ce70142632ca99e2a1f139d0c20be289198e20f375df9768062ca9ff746f492bd2b33f182266e9d03c42da59e2b373c8c8ccae8a9cae498e9c150b3560f"
     }
   ]
 }
