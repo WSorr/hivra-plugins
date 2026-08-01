@@ -11,6 +11,8 @@ const PREPARE_DRAFT_METHOD: &str = "prepare_moltbook_draft";
 const PLAN_HEARTBEAT_METHOD: &str = "plan_moltbook_heartbeat";
 const PLAN_ENGAGEMENT_METHOD: &str = "plan_moltbook_engagement";
 const PREPARE_REPLY_METHOD: &str = "prepare_moltbook_reply";
+const AUTHORIZE_DELEGATED_REPLY_METHOD: &str = "authorize_moltbook_delegated_reply";
+const DELEGATED_REPLY_CONTRACT_KIND: &str = "moltbook_ambassador_delegated_reply_authorization";
 const ABI_SCHEMA_VERSION: u32 = 1;
 #[cfg(target_arch = "wasm32")]
 const MAX_ABI_INPUT_BYTES: usize = 64 * 1024;
@@ -201,6 +203,48 @@ struct ReplyDraftOutput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct DelegatedReplyInput {
+    schema_version: u32,
+    plugin_id: String,
+    host_method: String,
+    target_post_id: String,
+    target_comment_id: Option<String>,
+    engagement_plan_hash_hex: String,
+    reply_draft_hash_hex: String,
+    policy_version: u32,
+    max_daily_writes: u32,
+    writes_today: u32,
+    min_interval_minutes: u32,
+    minutes_since_last_write: Option<u32>,
+    observed_at_utc: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct CanonicalDelegatedReplyAuthorization {
+    schema_version: u32,
+    plugin_id: String,
+    contract_kind: String,
+    target_post_id: String,
+    target_comment_id: Option<String>,
+    engagement_plan_hash_hex: String,
+    reply_draft_hash_hex: String,
+    policy_version: u32,
+    max_daily_writes: u32,
+    writes_today: u32,
+    min_interval_minutes: u32,
+    observed_at_utc: String,
+    publish_allowed: bool,
+    human_review_required: bool,
+    safety_flags: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct DelegatedReplyOutput {
+    canonical_json: String,
+    authorization_hash_hex: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct AbiEnvelope {
     schema_version: u32,
     status: String,
@@ -317,9 +361,91 @@ fn evaluate_request(raw: &str) -> Result<Value, String> {
                 .map_err(|error| format!("invalid_reply_input: {error}"))?;
             serde_json::to_value(evaluate_reply_draft(input)?).map_err(|error| error.to_string())?
         }
+        AUTHORIZE_DELEGATED_REPLY_METHOD => {
+            let input = serde_json::from_value::<DelegatedReplyInput>(value)
+                .map_err(|error| format!("invalid_delegated_reply_input: {error}"))?;
+            serde_json::to_value(evaluate_delegated_reply(input)?)
+                .map_err(|error| error.to_string())?
+        }
         _ => return Err("unsupported_method: unknown host_method".to_string()),
     };
     Ok(output)
+}
+
+fn evaluate_delegated_reply(input: DelegatedReplyInput) -> Result<DelegatedReplyOutput, String> {
+    validate_identity(input.schema_version, &input.plugin_id)?;
+    if input.host_method != AUTHORIZE_DELEGATED_REPLY_METHOD {
+        return Err("invalid_delegated_reply_method".to_string());
+    }
+    if input.target_post_id.is_empty() || input.target_post_id.len() > 256 {
+        return Err("target_post_id is invalid".to_string());
+    }
+    match input.target_comment_id.as_ref() {
+        Some(id) if !id.is_empty() && id.len() <= 256 => {}
+        _ => return Err("delegated reply requires target_comment_id".to_string()),
+    }
+    for (field, value) in [
+        (
+            "engagement_plan_hash_hex",
+            input.engagement_plan_hash_hex.as_str(),
+        ),
+        ("reply_draft_hash_hex", input.reply_draft_hash_hex.as_str()),
+    ] {
+        if value.len() != 64
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(format!("{field} is invalid"));
+        }
+    }
+    validate_utc(&input.observed_at_utc, "observed_at_utc")?;
+    if input.policy_version != 1 {
+        return Err("unsupported_delegation_policy".to_string());
+    }
+    if !(1..=12).contains(&input.max_daily_writes) {
+        return Err("max_daily_writes must be 1..12".to_string());
+    }
+    if input.writes_today >= input.max_daily_writes {
+        return Err("delegation_daily_budget_exhausted".to_string());
+    }
+    if !(5..=1440).contains(&input.min_interval_minutes) {
+        return Err("min_interval_minutes must be 5..1440".to_string());
+    }
+    if input
+        .minutes_since_last_write
+        .is_some_and(|minutes| minutes < input.min_interval_minutes)
+    {
+        return Err("delegation_interval_not_elapsed".to_string());
+    }
+
+    let canonical = CanonicalDelegatedReplyAuthorization {
+        schema_version: ABI_SCHEMA_VERSION,
+        plugin_id: PLUGIN_ID.to_string(),
+        contract_kind: DELEGATED_REPLY_CONTRACT_KIND.to_string(),
+        target_post_id: input.target_post_id,
+        target_comment_id: input.target_comment_id,
+        engagement_plan_hash_hex: input.engagement_plan_hash_hex,
+        reply_draft_hash_hex: input.reply_draft_hash_hex,
+        policy_version: input.policy_version,
+        max_daily_writes: input.max_daily_writes,
+        writes_today: input.writes_today,
+        min_interval_minutes: input.min_interval_minutes,
+        observed_at_utc: input.observed_at_utc,
+        publish_allowed: true,
+        human_review_required: false,
+        safety_flags: vec![
+            "exact_reply_draft_bound".to_string(),
+            "engagement_plan_bound".to_string(),
+            "bounded_delegation_policy_v1".to_string(),
+            "external_effect_required".to_string(),
+        ],
+    };
+    let canonical_json = serde_json::to_string(&canonical).map_err(|error| error.to_string())?;
+    Ok(DelegatedReplyOutput {
+        authorization_hash_hex: sha256_hex(canonical_json.as_bytes()),
+        canonical_json,
+    })
 }
 
 fn evaluate_reply_draft(input: ReplyDraftInput) -> Result<ReplyDraftOutput, String> {
@@ -983,9 +1109,7 @@ mod tests {
         assert!(output
             .canonical_json
             .contains("\"action_class\":\"no_action\""));
-        assert!(output
-            .canonical_json
-            .contains("\"target_comment_id\":null"));
+        assert!(output.canonical_json.contains("\"target_comment_id\":null"));
         assert!(!output.canonical_json.contains("actor-old-reply"));
     }
 
@@ -1099,5 +1223,62 @@ mod tests {
         assert!(evaluate_reply_draft(input)
             .expect_err("unsafe reply must reject")
             .contains("unsafe_reply_content"));
+    }
+
+    fn delegated_reply_input() -> DelegatedReplyInput {
+        DelegatedReplyInput {
+            schema_version: 1,
+            plugin_id: PLUGIN_ID.to_string(),
+            host_method: AUTHORIZE_DELEGATED_REPLY_METHOD.to_string(),
+            target_post_id: "post-1".to_string(),
+            target_comment_id: Some("comment-1".to_string()),
+            engagement_plan_hash_hex: "a".repeat(64),
+            reply_draft_hash_hex: "b".repeat(64),
+            policy_version: 1,
+            max_daily_writes: 3,
+            writes_today: 1,
+            min_interval_minutes: 30,
+            minutes_since_last_write: Some(45),
+            observed_at_utc: "2026-07-31T18:00:00.000Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn delegated_reply_binds_exact_draft_and_policy() {
+        let input = delegated_reply_input();
+        let first = evaluate_delegated_reply(input.clone()).expect("authorization succeeds");
+        let second = evaluate_delegated_reply(input).expect("authorization is deterministic");
+        assert_eq!(first, second);
+        assert!(first.canonical_json.contains("\"publish_allowed\":true"));
+        assert!(first
+            .canonical_json
+            .contains("\"human_review_required\":false"));
+        assert!(first
+            .canonical_json
+            .contains("\"reply_draft_hash_hex\":\"bbbb"));
+    }
+
+    #[test]
+    fn delegated_reply_fails_closed_on_budget_or_interval() {
+        let mut budget = delegated_reply_input();
+        budget.writes_today = budget.max_daily_writes;
+        assert_eq!(
+            evaluate_delegated_reply(budget).expect_err("budget must block"),
+            "delegation_daily_budget_exhausted"
+        );
+
+        let mut interval = delegated_reply_input();
+        interval.minutes_since_last_write = Some(29);
+        assert_eq!(
+            evaluate_delegated_reply(interval).expect_err("interval must block"),
+            "delegation_interval_not_elapsed"
+        );
+
+        let mut root_comment = delegated_reply_input();
+        root_comment.target_comment_id = None;
+        assert_eq!(
+            evaluate_delegated_reply(root_comment).expect_err("root comment must block"),
+            "delegated reply requires target_comment_id"
+        );
     }
 }

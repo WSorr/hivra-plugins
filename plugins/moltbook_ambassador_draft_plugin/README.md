@@ -20,6 +20,16 @@ The separate `prepare_moltbook_reply` method binds exact reviewed prose to the
 selected post, optional parent comment, and engagement-plan hash. It remains a
 pure decision and cannot publish.
 
+`authorize_moltbook_delegated_reply` is a second, narrow decision boundary. It
+can authorize only that exact reply draft under bounded daily-write and
+minimum-interval policy. It has no provider or network access; Hivra still
+must bind the authorization to the canonical external effect and durable
+receipt lifecycle.
+
+The host also owns canonical target-level engagement identity. Assisted and
+Bounded controls must not create parallel effects for one post/comment target;
+WASM authorization is necessary but is not, by itself, duplicate prevention.
+
 The input bulletin carries a stable bulletin id, release tag, public category,
 bounded supporting facts, and an explicitly reviewed title and body. The
 plugin rejects a mechanical fact dump, preserves the reviewed prose in its

@@ -1,6 +1,6 @@
 # Hivra Ambassador Drone Contract v1
 
-Status: deterministic draft, heartbeat, and engagement planning
+Status: deterministic draft, heartbeat, engagement planning, and bounded reply authorization
 
 Plugin id: `hivra.contract.moltbook-ambassador.v1`
 
@@ -22,8 +22,9 @@ development facts. It is not the ledger, a contact card, a backup, or an
 implicit permission to publish. The producer must provide a stable
 `bulletin_id`; the host may later attach a signature and release metadata.
 
-The current capabilities are `content.draft.prepare`, `content.feed.plan`, and
-`content.engagement.plan`. None is a network capability. The host may provide a normalized, bounded
+The current capabilities are `content.draft.prepare`, `content.feed.plan`,
+`content.engagement.plan`, `content.reply.prepare`, and
+`content.reply.delegate`. None is a network capability. The host may provide a normalized, bounded
 public Home/Feed observation to the heartbeat method; credentials and provider
 DTOs never enter WASM.
 
@@ -61,6 +62,37 @@ eligible. Verified, non-spam feed content may produce `comment_draft` or
 `upvote_candidate`. Locked, unverified, spam-marked, or weakly evidenced
 content produces `no_action`. No text is generated and no remote effect is
 authorized.
+
+## Bounded reply authorization
+
+`authorize_moltbook_delegated_reply` is a narrow authorization contract, not a
+network method. It binds one exact reply draft hash to one engagement-plan hash,
+post, mandatory parent comment, UTC observation, and delegation policy v1.
+
+Policy v1 permits replies only, at most 1..12 committed writes per UTC day,
+with a minimum interval of 5..1440 minutes. The host supplies the current
+write count (approved, queued, delivering, unresolved, or succeeded) and
+elapsed interval from its durable external-effect history. Exhausted budget, a premature interval, malformed evidence, or an
+unknown policy version fails closed.
+
+Successful output has `publish_allowed: true` and
+`human_review_required: false`, but it is still not a provider effect or a
+receipt. The host must prove that the canonical reply effect contains the same
+post, parent comment, reply draft hash, and engagement-plan hash before using
+the authorization hash as approval evidence. The existing effect state machine,
+provider allowlist, reconciliation, and receipt rules remain mandatory.
+
+This method does not let AI choose capabilities or modify policy. AI text must
+first pass the normal reply-draft contract; the authorization binds that exact
+validated result.
+
+The host must additionally enforce one canonical engagement per remote target.
+Assisted and Bounded handling are policies over that engagement, not separate
+effect routes. A matching active operation is resumed, a succeeded target is
+closed, and a different draft hash cannot bypass target-level deduplication.
+The normative host lifecycle is
+`docs/plugins/moltbook_engagement_lifecycle_v1.md` in the Hivra application
+repository.
 
 ## Input
 
@@ -126,19 +158,22 @@ Rules:
   values; they do not rename the Capsule or the plugin package.
 - `persona_summary` and `allowed_topics` are local policy, not public facts and
   not instructions received from Moltbook.
-- `approval_mode` is fail-closed: v1 permits `draft` and `assisted`; remote
-  autonomous modes are not valid until the external-effect contract exists.
+- `approval_mode` remains fail-closed at the profile layer. Assisted writes are
+  the default. Bounded delegation may only be exposed after the host binds this
+  WASM authorization to the existing external-effect lifecycle and a visible
+  local stop control.
 - `enabled` is a local stop control and does not delete the remote account.
 - API keys, claim tokens, Capsule seeds, transport keys, ledger data, and
   private contact data are forbidden in this document.
-- In this draft-only version the document is scoped by `(capsule_root,
-  plugin_id)` and must be isolated from other plugin instances. A future
-  external-account binding may extend the scope with `provider_id` and
-  `provider_account_id`.
+- The document is scoped by `(capsule_root, plugin_id)` and must be isolated
+  from other plugin instances. The host-owned credential/effect binding adds
+  `provider_id` and `provider_account_id` without exposing either secret or
+  provider DTOs to WASM.
 
-The current WASM draft method does not consume this configuration yet: it
-accepts only an explicit Public Bulletin. The host will apply this policy when
-the future registration, preview, and external-publication ports are added.
+The Public Bulletin draft method intentionally accepts only an explicit Public
+Bulletin. Other deterministic methods receive only the bounded policy fields
+required by their exact contract; the host owns registration, observation,
+inference disclosure, and external publication.
 
 ## Mandatory safety rules
 
@@ -151,9 +186,10 @@ the future registration, preview, and external-publication ports are added.
 - Keep the first user-facing mode assisted: exact draft preview and explicit
   approval are required for every future remote write.
 
-## Future Moltbook adapter gate
+## Host adapter and automatic-mode gate
 
-Implementation of remote access is blocked until all of the following exist:
+The host implementation now provides the following required remote-access
+boundaries:
 
 1. provider-neutral effect states covering prepare, approval, queue, delivery,
    unresolved timeout, reconciliation, terminal receipt, and cancellation;
@@ -166,9 +202,15 @@ Implementation of remote access is blocked until all of the following exist:
    history;
 8. macOS and Android offline, restart, replay, and manual approval tests.
 
+Observe and Assisted publication may use this host boundary. Automatic modes
+remain blocked until canonical target-level engagement identity, one cycle
+orchestrator, duplicate freeze, stop control, and the release evidence in
+`docs/plugins/moltbook_engagement_lifecycle_v1.md` are complete.
+
 The detailed implementation order and UI boundary are owned by
 `docs/plugins/moltbook_agent_drone_design_v1.md` in the Hivra application
-repository. This plugin contract owns only the WASM-facing draft boundary.
+repository. This plugin contract owns only deterministic WASM-facing decisions
+and authorization evidence; it never owns provider effects.
 
 Moltbook remains external remote truth. It never becomes Core truth, a
 relationship fact, a consensus input, or a backup payload.
