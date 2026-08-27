@@ -25,6 +25,7 @@ jobs:
         run: ./scripts/review_all.sh
 
       - name: Upload plugin artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: plugin-zips
