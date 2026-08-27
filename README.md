@@ -64,8 +64,22 @@ Run the complete repository review:
 ./scripts/review_all.sh
 ```
 
-Plugin archives are packaged with fixed metadata and stable entry ordering, so
-identical manifest and WASM bytes produce an identical SHA-256 digest.
+macOS builds validate plugin semantics and tests but never define catalog
+digests. Canonical release bytes are produced only by the pinned
+`ubuntu-24.04` / Rust `1.93.0` CI builder. CI builds each candidate twice in
+separate clean jobs and requires identical manifest, WASM, and ZIP bytes before
+validating the signed catalog. Canonical archives use `ZIP_STORED`, fixed entry
+order, timestamps, permissions, and empty extra fields.
+
+Before a release PR can pass, download its canonical candidate artifact and
+bind it mechanically while signing the catalog:
+
+```bash
+python3 scripts/sign_catalog.py \
+  --key ~/.hivra/plugin_catalog_ed25519.pem \
+  --dist-dir /path/to/downloaded/plugin-zips-a \
+  --release-tag v0.2.8-plugins
+```
 
 ## Included test plugin scaffolds
 

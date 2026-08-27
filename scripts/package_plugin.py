@@ -20,12 +20,14 @@ entries = (
 with zipfile.ZipFile(
     output_path,
     mode="w",
-    compression=zipfile.ZIP_DEFLATED,
-    compresslevel=9,
+    compression=zipfile.ZIP_STORED,
 ) as archive:
+    archive.comment = b""
     for name, payload in entries:
         info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
-        info.compress_type = zipfile.ZIP_DEFLATED
+        info.compress_type = zipfile.ZIP_STORED
         info.create_system = 3
         info.external_attr = 0o100644 << 16
+        info.extra = b""
+        info.comment = b""
         archive.writestr(info, payload)
