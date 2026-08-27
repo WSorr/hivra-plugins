@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -155,9 +156,26 @@ def validate_dist(catalog: dict, dist_dir: Path) -> None:
         if not artifact_path.is_file():
             fail(f"{entry['id']}: missing built artifact {artifact_name}")
         actual_digest = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+        try:
+            with zipfile.ZipFile(artifact_path) as archive:
+                manifest_digest = hashlib.sha256(
+                    archive.read("plugin/manifest.json")
+                ).hexdigest()
+                wasm_digest = hashlib.sha256(
+                    archive.read("plugin/module.wasm")
+                ).hexdigest()
+        except (KeyError, zipfile.BadZipFile) as error:
+            fail(f"{entry['id']}: invalid plugin archive: {error}")
+        print(
+            "catalog artifact hashes: "
+            f"id={entry['id']} zip={actual_digest} "
+            f"manifest={manifest_digest} wasm={wasm_digest}"
+        )
         if actual_digest != entry["sha256_hex"]:
             fail(
-                f"{entry['id']}: built artifact digest does not match catalog"
+                f"{entry['id']}: built artifact digest does not match catalog; "
+                f"expected_zip={entry['sha256_hex']} actual_zip={actual_digest} "
+                f"manifest={manifest_digest} wasm={wasm_digest}"
             )
 
 
