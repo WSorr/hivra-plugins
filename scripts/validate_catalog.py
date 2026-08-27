@@ -159,6 +159,22 @@ def validate_dist(catalog: dict, dist_dir: Path) -> None:
         actual_digest = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
         try:
             with zipfile.ZipFile(artifact_path) as archive:
+                archive_entries = archive.infolist()
+                if [item.filename for item in archive_entries] != [
+                    "plugin/manifest.json",
+                    "plugin/module.wasm",
+                ]:
+                    fail(f"{entry['id']}: archive entry order is not canonical")
+                for item in archive_entries:
+                    if (
+                        item.date_time != (1980, 1, 1, 0, 0, 0)
+                        or item.compress_type != zipfile.ZIP_STORED
+                        or item.create_system != 3
+                        or item.external_attr != 0o100644 << 16
+                        or item.extra
+                        or item.comment
+                    ):
+                        fail(f"{entry['id']}: archive metadata is not canonical")
                 manifest_digest = hashlib.sha256(
                     archive.read("plugin/manifest.json")
                 ).hexdigest()

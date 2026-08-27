@@ -4,7 +4,9 @@ import hashlib
 import json
 import subprocess
 import tempfile
+import zipfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 def fail(message: str) -> None:
@@ -62,6 +64,52 @@ def sign_payload(private_key_path: Path, payload: bytes) -> bytes:
         return signature_path.read_bytes()
 
 
+def bind_catalog_artifacts(catalog: dict, dist_dir: Path, release_tag: str) -> None:
+    entries = catalog.get("entries")
+    if not isinstance(entries, list) or not entries:
+        fail("catalog entries must be a non-empty list")
+
+    artifacts_by_plugin_id = {}
+    for artifact_path in sorted(dist_dir.glob("*.zip")):
+        try:
+            with zipfile.ZipFile(artifact_path) as archive:
+                manifest = json.loads(
+                    archive.read("plugin/manifest.json").decode("utf-8")
+                )
+        except (KeyError, UnicodeDecodeError, json.JSONDecodeError, zipfile.BadZipFile) as error:
+            fail(f"invalid plugin archive {artifact_path.name}: {error}")
+        plugin_id = str(manifest.get("plugin_id", "")).strip()
+        release_version = str(manifest.get("release_version", "")).strip()
+        if not plugin_id or not release_version:
+            fail(f"plugin archive missing identity: {artifact_path.name}")
+        if plugin_id in artifacts_by_plugin_id:
+            fail(f"duplicate plugin archive for {plugin_id}")
+        artifacts_by_plugin_id[plugin_id] = (
+            artifact_path,
+            release_version,
+            hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
+        )
+
+    expected_plugin_ids = {str(entry.get("plugin_id", "")).strip() for entry in entries}
+    if set(artifacts_by_plugin_id) != expected_plugin_ids:
+        fail("artifact plugin ids do not exactly match catalog entries")
+
+    for entry in entries:
+        plugin_id = str(entry["plugin_id"]).strip()
+        artifact_path, release_version, digest = artifacts_by_plugin_id[plugin_id]
+        current_url = str(entry.get("download_url", "")).strip()
+        parsed = urlparse(current_url)
+        marker = "/releases/download/"
+        if parsed.scheme != "https" or marker not in parsed.path:
+            fail(f"catalog entry has no canonical release URL: {plugin_id}")
+        repository_url = current_url.split(marker, 1)[0]
+        entry["version"] = release_version
+        entry["download_url"] = (
+            f"{repository_url}{marker}{release_tag}/{artifact_path.name}"
+        )
+        entry["sha256_hex"] = digest
+
+
 def main() -> None:
     root = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser(
@@ -82,6 +130,14 @@ def main() -> None:
         action="store_true",
         help="Print raw public key hex for Hivra-App pinning.",
     )
+    parser.add_argument(
+        "--dist-dir",
+        help="Canonical CI artifact directory to bind before signing.",
+    )
+    parser.add_argument(
+        "--release-tag",
+        help="Immutable release tag used for bound artifact URLs.",
+    )
     args = parser.parse_args()
 
     catalog_path = Path(args.catalog)
@@ -94,6 +150,13 @@ def main() -> None:
     catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
     if not isinstance(catalog, dict):
         fail("catalog root must be a JSON object")
+    if bool(args.dist_dir) != bool(args.release_tag):
+        fail("--dist-dir and --release-tag must be provided together")
+    if args.dist_dir:
+        dist_dir = Path(args.dist_dir)
+        if not dist_dir.is_dir():
+            fail(f"artifact directory not found: {dist_dir}")
+        bind_catalog_artifacts(catalog, dist_dir, args.release_tag)
     unsigned_catalog = dict(catalog)
     unsigned_catalog.pop("signatures", None)
     payload = canonical_json(unsigned_catalog).encode("utf-8")
