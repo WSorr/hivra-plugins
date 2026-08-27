@@ -28,7 +28,11 @@ PLUGIN_VERSION="$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));pri
 
 echo "Building $PLUGIN_NAME ($PLUGIN_ID@$PLUGIN_VERSION)"
 
-cargo build \
+CARGO_HOME_DIR="${CARGO_HOME:-$HOME/.cargo}"
+CANONICAL_RUSTFLAGS="--remap-path-prefix=$ROOT_DIR=/hivra-plugins --remap-path-prefix=$CARGO_HOME_DIR=/cargo"
+
+CARGO_INCREMENTAL=0 RUSTFLAGS="$CANONICAL_RUSTFLAGS" cargo build \
+  --locked \
   --manifest-path "$PLUGIN_DIR/Cargo.toml" \
   --target wasm32-unknown-unknown \
   --release

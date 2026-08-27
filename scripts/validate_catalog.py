@@ -150,6 +150,7 @@ def run_negative_self_tests(catalog: dict) -> None:
 
 
 def validate_dist(catalog: dict, dist_dir: Path) -> None:
+    mismatches = []
     for entry in catalog["entries"]:
         artifact_name = Path(urlparse(entry["download_url"]).path).name
         artifact_path = dist_dir / artifact_name
@@ -172,11 +173,13 @@ def validate_dist(catalog: dict, dist_dir: Path) -> None:
             f"manifest={manifest_digest} wasm={wasm_digest}"
         )
         if actual_digest != entry["sha256_hex"]:
-            fail(
+            mismatches.append(
                 f"{entry['id']}: built artifact digest does not match catalog; "
                 f"expected_zip={entry['sha256_hex']} actual_zip={actual_digest} "
                 f"manifest={manifest_digest} wasm={wasm_digest}"
             )
+    if mismatches:
+        fail("\n".join(mismatches))
 
 
 def main() -> None:
