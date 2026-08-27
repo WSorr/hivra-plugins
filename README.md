@@ -64,8 +64,11 @@ Run the complete repository review:
 ./scripts/review_all.sh
 ```
 
-Plugin archives are packaged with fixed metadata and stable entry ordering, so
-identical manifest and WASM bytes produce an identical SHA-256 digest.
+The review builds every package with the pinned Rust toolchain, verifies the
+catalog signature against the trusted public key, runs negative signature
+mutations, and binds every generated archive to its catalog SHA-256. Plugin
+archives use fixed metadata and stable entry ordering, so identical manifest
+and WASM bytes produce an identical digest.
 
 ## Included test plugin scaffolds
 

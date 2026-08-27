@@ -17,12 +17,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.93.0
         with:
           targets: wasm32-unknown-unknown
 
-      - name: Build plugin archives
-        run: ./scripts/build_all_plugins.sh
+      - name: Review and build plugin archives
+        run: ./scripts/review_all.sh
 
       - name: Upload plugin artifacts
         uses: actions/upload-artifact@v4
@@ -37,4 +37,3 @@ jobs:
         with:
           files: dist/plugins/*.zip
           generate_release_notes: true
-

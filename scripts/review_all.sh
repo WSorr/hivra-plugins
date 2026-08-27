@@ -5,7 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 python3 scripts/validate_plugins.py
-python3 scripts/validate_catalog.py
+./scripts/build_all_plugins.sh
+python3 scripts/validate_catalog.py --self-test --dist-dir dist/plugins
 cargo test --workspace
 
 echo "plugin review passed"
