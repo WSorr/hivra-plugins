@@ -722,7 +722,7 @@ fn evaluate_draft(input: DraftInput) -> Result<DraftOutput, String> {
     }
     let lowered = format!("{category} {body} {title} {}", facts.join(" ")).to_ascii_lowercase();
     let forbidden: [(&str, &[&str]); 4] = [
-        ("crypto_promotion", &["bitcoin", "crypto", "token", "coin"]),
+        ("crypto_promotion", &["bitcoin", "crypto", "coin"]),
         ("financial_advice", &["buy", "sell", "profit", "investment"]),
         (
             "credential_or_secret",
@@ -952,6 +952,18 @@ mod tests {
         assert!(evaluate_draft(value)
             .expect_err("unsafe draft must reject")
             .contains("unsafe_public_content"));
+    }
+
+    #[test]
+    fn allows_neutral_verification_token_language() {
+        let mut value = input();
+        value.facts = vec![
+            "The provider action token remains undisclosed during verification.".to_string(),
+        ];
+        value.reviewed_body =
+            "The provider action token remains undisclosed during verification, while the existing publication owner validates the proposed answer."
+                .to_string();
+        assert!(evaluate_draft(value).is_ok());
     }
 
     #[test]

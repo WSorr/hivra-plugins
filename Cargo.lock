@@ -83,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "hivra_moltbook_ambassador_draft_plugin"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "serde",
  "serde_json",
