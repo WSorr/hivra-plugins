@@ -10,7 +10,7 @@
       "display_name": "BingX Futures Trading (Test Plugin)",
       "version": "0.2.4",
       "package_kind": "zip",
-      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.8-plugins/bingx_futures_test_plugin-0.2.4.zip",
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.9-plugins/bingx_futures_test_plugin-0.2.4.zip",
       "sha256_hex": "0e1eb93a9f53d3da9b4ec914e9841bc11355d08a59fdf8eb2b67994dd496bfda"
     },
     {
@@ -19,24 +19,24 @@
       "display_name": "Capsule Chat (Test Plugin)",
       "version": "0.2.2",
       "package_kind": "zip",
-      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.8-plugins/capsule_chat_test_plugin-0.2.2.zip",
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.9-plugins/capsule_chat_test_plugin-0.2.2.zip",
       "sha256_hex": "dc416c95041b4a6b889b82cf0fdbbe721db7d6ffee8547569fe23036f24cc862"
     },
     {
       "id": "moltbook-ambassador",
       "plugin_id": "hivra.contract.moltbook-ambassador.v1",
       "display_name": "Moltbook Ambassador",
-      "version": "0.7.1",
+      "version": "0.7.2",
       "package_kind": "zip",
-      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.8-plugins/moltbook_ambassador_draft_plugin-0.7.1.zip",
-      "sha256_hex": "8f131973dcf3a3e488d07e35483de11e5e45f4a4a21db44c334af09c4075845d"
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.9-plugins/moltbook_ambassador_draft_plugin-0.7.2.zip",
+      "sha256_hex": "90726d71d33cbaca4f8f60edb118d38eaaea9ab80a99df3c0125b26f604bb2b3"
     }
   ],
   "signatures": [
     {
       "algorithm": "ed25519",
       "key_id": "f4757da54ecb6f16431bcfb4fcc947633d6f68c9b4576b69ddb61fc4fe2de7a3",
-      "signature_hex": "d351a7a3e4d1682b71be76525428aa27ed8696491da9f81f9e6d11d8ad65222c8cc6ed858f399e18109ec4821581dc0ad7a2cf12c059e68d6666f0a276261107"
+      "signature_hex": "251a8920bade0bf3df95f39accbf8fef3c0c7ad7c9ce54b0521b6e093d95664b96ebe12ff184c5112004f8999bdbf0b1cc3cab5ec0c6c6a233e9c9c6a94cd90f"
     }
   ]
 }
