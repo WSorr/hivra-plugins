@@ -15,7 +15,6 @@ Core app runtime, ledger, and host execution stay in the main Hivra repository.
 
 - `contracts/`: versioned host API contracts consumed by plugins.
 - `contracts/hivra_contract_profile_v1.md`: shared contract standard (determinism, capabilities, fail-closed validation).
-- `contracts/ai_capsule_engineer_contract_v1.md`: optional AI-assisted capsule inspection contract.
 - `checklists/`: release and safety checklists for plugin-side contracts.
 - `catalog/`: source catalog consumed by Hivra app (`plugin_catalog.json`).
 - `plugins/`: plugin sources and per-plugin manifests.
@@ -87,13 +86,3 @@ python3 scripts/sign_catalog.py \
 - `hivra.contract.capsule-chat.v1`
 - `hivra.contract.moltbook-ambassador.v1` (bounded observation and deterministic
   assisted post/reply preparation; network effects remain host-owned)
-
-## Planned diagnostic contract
-
-- `hivra.contract.ai-capsule-engineer.v1`
-  - Capsule Doctor: user-facing diagnostics without repository access.
-  - Hivra Engineer: explicit developer mode with local repository allowlist.
-  - Plugin Auditor: installed/local plugin diagnostics.
-  - Plugin Scaffolder: draft-only plugin skeleton generation.
-  - Developer Workspace Bootstrap: app/plugin repo links can initialize a
-    read-only inspection workspace without maintainer private keys.
