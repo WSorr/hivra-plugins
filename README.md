@@ -82,7 +82,6 @@ python3 scripts/sign_catalog.py \
 
 ## Included test plugin scaffolds
 
-- `hivra.contract.bingx-futures-trading.v1`
 - `hivra.contract.capsule-chat.v1`
 - `hivra.contract.moltbook-ambassador.v1` (bounded observation and deterministic
   assisted post/reply preparation; network effects remain host-owned)

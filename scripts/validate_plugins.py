@@ -23,8 +23,6 @@ allowed_capabilities = {
     "content.feed.plan",
     "content.reply.prepare",
     "content.reply.delegate",
-    "exchange.read.bingx.market",
-    "exchange.trade.bingx.futures",
 }
 
 for plugin_dir in plugin_dirs:

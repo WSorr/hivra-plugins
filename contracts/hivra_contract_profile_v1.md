@@ -15,7 +15,7 @@ Each contract package must define:
 
 - `schema`: `hivra.plugin.manifest`
 - `version`: `1` (manifest schema version)
-- `plugin_id`: globally unique contract id (example: `hivra.contract.bingx-futures-trading.v1`)
+- `plugin_id`: globally unique contract id (example: `hivra.contract.capsule-chat.v1`)
 - `release_version`: package release version (example: `0.1.0`)
 - `contract.kind`: semantic contract family id
 
