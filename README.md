@@ -85,3 +85,19 @@ python3 scripts/sign_catalog.py \
 - `hivra.contract.capsule-chat.v1`
 - `hivra.contract.moltbook-ambassador.v1` (bounded observation and deterministic
   assisted post/reply preparation; network effects remain host-owned)
+- `hivra.contract.jack-ventura.v1` (development package, not in the published
+  catalog): JackV `3b81753` line formation and package-owned workspace on
+  `1D/4H/1H/30M/15M/5M`. Settings, swings, ATR, first-known times and touched
+  levels live in WASM state. It requests public candles and normalized
+  read-only account evidence through `plugin_workspace_v1`, and computes
+  quantity and stop previews from margin and existing directional leverage.
+  Keys remain in the host; advanced settings and calculation evidence are
+  optional. It can prepare one immutable entry for explicit host confirmation
+  and interpret exact provider-order evidence after restart. The host reads
+  current selected-instrument open orders; WASM presents their transient
+  list without adopting manual orders or storing another order history.
+  The host owns signing and the existing durable effect journal; uncertain outcomes do not
+  authorize duplicate entries. Attached stop requests do not prove protection.
+  Autonomous trading, fill-based protection/profit exits and VPS operation
+  remain incomplete. Build with `./scripts/build_plugin_zip.sh jack_ventura_plugin`
+  and install the local ZIP in a host supporting that workspace contract.

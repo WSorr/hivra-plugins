@@ -23,6 +23,19 @@ allowed_capabilities = {
     "content.feed.plan",
     "content.reply.prepare",
     "content.reply.delegate",
+    "workspace.render",
+    "workspace.continue",
+    "state.plugin.read_write",
+    "market.candles.read",
+    "market.instruments.read",
+    "account.snapshot.read",
+    "account.connect",
+    "order.entry.place",
+    "order.entry.cancel",
+    "order.snapshot.read",
+    "position.snapshot.read",
+    "position.exit.place",
+    "workspace.schedule",
 }
 
 for plugin_dir in plugin_dirs:
