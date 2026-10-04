@@ -1,7 +1,7 @@
 {
   "schema": "hivra.plugin.manifest",
   "version": 1,
-  "release_version": "0.1.9",
+  "release_version": "0.1.13",
   "plugin_id": "hivra.contract.jack-ventura.v1",
   "wasm_module": "hivra_jack_ventura_plugin.wasm",
   "capabilities": ["account.connect", "account.snapshot.read", "market.candles.read", "market.instruments.read", "order.entry.cancel", "order.entry.place", "order.snapshot.read", "position.exit.place", "position.snapshot.read", "state.plugin.read_write", "workspace.continue", "workspace.render", "workspace.schedule"],

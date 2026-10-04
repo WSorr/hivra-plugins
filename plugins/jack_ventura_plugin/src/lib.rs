@@ -189,7 +189,25 @@ struct Level {
     bottom: f64,
     touched: bool,
     #[serde(default)]
+    zone_checked: bool,
+    #[serde(default)]
     consumed: bool,
+}
+
+impl Level {
+    fn captures(&self, time: i64, high: f64, low: f64, direction: i8) -> bool {
+        time >= self.first_known
+            && if direction == 1 {
+                high >= self.bottom
+            } else {
+                low <= self.top
+            }
+    }
+
+    fn observe(&mut self, bar: &Candle, direction: i8) {
+        self.touched |= self.captures(bar.0, bar.2, bar.3, direction);
+        self.zone_checked |= self.touched;
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -206,9 +224,39 @@ struct Frame {
     swings: Vec<Swing>,
     buy: Vec<Level>,
     sell: Vec<Level>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rebuild_levels: Option<Vec<(i8, Level)>>,
 }
 
 impl Frame {
+    fn rebuild(&mut self) {
+        let retained = if let Some(mut retained) = self.rebuild_levels.take() {
+            for (direction, levels) in [(1, &self.buy), (-1, &self.sell)] {
+                for level in levels {
+                    if let Some((_, old)) = retained
+                        .iter_mut()
+                        .find(|(d, old)| *d == direction && old.origin == level.origin)
+                    {
+                        old.touched |= level.touched;
+                        old.consumed |= level.consumed;
+                    }
+                }
+            }
+            retained
+        } else {
+            self.buy
+                .drain(..)
+                .map(|level| (1, level))
+                .chain(self.sell.drain(..).map(|level| (-1, level)))
+                .collect()
+        };
+        *self = Self {
+            timeframe: self.timeframe.clone(),
+            rebuild_levels: Some(retained),
+            ..Self::default()
+        };
+    }
+
     fn process(&mut self, bar: Candle, settings: &Settings, duration: i64, form_levels: bool) {
         let tr = match self.bars.last() {
             Some(previous) => (bar.2 - bar.3)
@@ -274,10 +322,10 @@ impl Frame {
             }
         }
         for level in &mut self.buy {
-            level.touched |= bar.0 >= level.first_known && bar.2 >= level.price;
+            level.observe(&bar, 1);
         }
         for level in &mut self.sell {
-            level.touched |= bar.0 >= level.first_known && bar.3 <= level.price;
+            level.observe(&bar, -1);
         }
         self.last_open = Some(bar.0);
         if self.bars.len() > length + 1 {
@@ -315,15 +363,34 @@ impl Frame {
             .map(|m| m.price)
             .fold(f64::INFINITY, f64::min);
         let center = (highest + lowest) / 2.0;
+        let previous = self
+            .rebuild_levels
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .find(|(d, old)| *d == direction && old.origin == origin)
+            .map(|(_, old)| old);
         let levels = if direction == 1 {
             &mut self.buy
         } else {
             &mut self.sell
         };
-        if let Some(level) = levels.first_mut().filter(|l| l.origin == origin) {
+        if let Some(index) = levels.iter().position(|l| l.origin == origin) {
+            let mut level = levels.remove(index);
+            if !level.touched
+                && !level.consumed
+                && (level.top != center + width || level.bottom != center - width)
+            {
+                level.zone_checked = false;
+            }
             level.price = price;
             level.top = center + width;
             level.bottom = center - width;
+            if let Some(old) = previous {
+                level.touched |= old.touched;
+                level.consumed |= old.consumed;
+            }
+            levels.insert(0, level);
         } else {
             levels.insert(
                 0,
@@ -333,8 +400,9 @@ impl Frame {
                     price,
                     top: center + width,
                     bottom: center - width,
-                    touched: false,
-                    consumed: false,
+                    touched: previous.is_some_and(|old| old.touched),
+                    zone_checked: true,
+                    consumed: previous.is_some_and(|old| old.consumed),
                 },
             );
             levels.truncate(3);
@@ -427,7 +495,7 @@ impl State {
     fn request_market(&mut self, requests: &mut Vec<Value>) {
         self.complete = false;
         for frame in &mut self.frames {
-            frame.checked_at_ms = None;
+            frame.rebuild();
         }
         for (tf, _) in TIMEFRAMES {
             requests.push(json!({"kind":"market.candles.read", "provider":"bingx",
@@ -519,6 +587,9 @@ impl State {
                 || frame.swings.len() > 50
                 || frame.buy.len() > 3
                 || frame.sell.len() > 3
+                || frame.rebuild_levels.as_ref().is_some_and(|levels| {
+                    levels.len() > 6 || levels.iter().any(|(d, _)| *d != 1 && *d != -1)
+                })
                 || frame.seed_count > 10
                 || !frame.seed_sum.is_finite()
                 || frame.atr.is_some_and(|v| !v.is_finite() || v < 0.0)
@@ -538,7 +609,13 @@ impl State {
             {
                 return Err("Invalid frame continuity".into());
             }
-            for level in frame.buy.iter().chain(&frame.sell) {
+            for level in frame.buy.iter().chain(&frame.sell).chain(
+                frame
+                    .rebuild_levels
+                    .iter()
+                    .flatten()
+                    .map(|(_, level)| level),
+            ) {
                 if ![level.price, level.top, level.bottom]
                     .iter()
                     .all(|v| v.is_finite())
@@ -1015,6 +1092,8 @@ struct Output<'a> {
     requests: Vec<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     resume_action: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retired_entry: Option<EntryPlan>,
 }
 
 // Serialize changing state only once, as part of the final envelope. Pure
@@ -1075,6 +1154,7 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
     state.validate()?;
     let mut requests = Vec::new();
     let mut resume_action = None;
+    let mut retired_entry = None;
     match input.action.as_str() {
         "open" => state.request_recovery(&mut requests),
         "present" => {}
@@ -1344,6 +1424,33 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
             }
         }
         "validate_entry" => {
+            let zone = state
+                .entry
+                .as_ref()
+                .and_then(|entry| {
+                    let plan = &entry.plan;
+                    state
+                        .frames
+                        .iter()
+                        .find(|f| f.timeframe == plan.timeframe)
+                        .and_then(|frame| {
+                            let levels = if plan.side == "long" {
+                                &frame.sell
+                            } else {
+                                &frame.buy
+                            };
+                            levels.iter().find(|level| {
+                                level.origin == plan.origin
+                                    && level.first_known == plan.first_known
+                                    && level.price == plan.line_price
+                                    && level.zone_checked
+                                    && !level.touched
+                                    && !level.consumed
+                            })
+                        })
+                })
+                .cloned()
+                .ok_or("Refresh the untouched entry zone before delivery")?;
             let entry = state
                 .entry
                 .as_mut()
@@ -1353,6 +1460,7 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
                 let quote: Snapshot =
                     serde_json::from_str(snapshot.get()).map_err(|_| "Invalid final quote")?;
                 let p = &entry.plan;
+                let direction = if p.side == "short" { 1 } else { -1 };
                 if quote.symbol != p.symbol
                     || quote.timeframe != "5m"
                     || observed < p.prepared_at_ms
@@ -1361,8 +1469,14 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
                     || quote.current_price <= 0.0
                     || (p.side == "long" && quote.current_price <= p.price)
                     || (p.side == "short" && quote.current_price >= p.price)
+                    || zone.captures(
+                        observed,
+                        quote.current_price,
+                        quote.current_price,
+                        direction,
+                    )
                 {
-                    return Err("Entry expired or price passed its line; no order sent".into());
+                    return Err("Entry expired or price entered its zone; no order sent".into());
                 }
                 let span = duration("5m")?;
                 let current_open = observed - observed % span;
@@ -1397,12 +1511,8 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
                 }
                 for bar in quote.candles.iter().chain(quote.current_candle.iter()) {
                     bar.validate()?;
-                    if bar.0 > observed
-                        || (bar.0 >= p.first_known
-                            && ((p.side == "long" && bar.3 <= p.line_price)
-                                || (p.side == "short" && bar.2 >= p.line_price)))
-                    {
-                        return Err("Entry line was already touched; no order sent".into());
+                    if bar.0 > observed || zone.captures(bar.0, bar.2, bar.3, direction) {
+                        return Err("Entry zone was already touched; no order sent".into());
                     }
                 }
                 let through = quote.candles.last().unwrap().0;
@@ -1598,6 +1708,12 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
                     })
             });
             entry.lifecycle_observed_at_ms = Some(snapshot.observed_at_ms);
+            if entry.position.is_some() && exit_terminal {
+                // A completed exit can leave exposure after later entry fills
+                // or a partial/manual reduction. Size the next exit from the
+                // current position, never from the original entry quantity.
+                entry.profit_exit = None;
+            }
             entry.flat_observed_at_ms = if flat && !closed {
                 Some(snapshot.observed_at_ms)
             } else {
@@ -1624,6 +1740,7 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
                     }
                 }
                 state.retired_before_ms = state.retired_before_ms.max(plan.prepared_at_ms);
+                retired_entry = Some(plan);
                 state.entry = None;
                 state.complete = false;
             }
@@ -1703,6 +1820,17 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
             if history_end < candles.last().unwrap().0 || history_end + span > observed {
                 return Err("Invalid history end".into());
             }
+            if frame.last_open.is_some_and(|last| history_end < last) {
+                return Err("Stale market snapshot".into());
+            }
+            // An interrupted rebuild resumes from the start of the next full
+            // provider read, not from a half-reconstructed ATR/swings state.
+            if frame.rebuild_levels.is_some()
+                && frame.last_open.is_some()
+                && snapshot.history_start_ms == Some(candles[0].0)
+            {
+                frame.rebuild();
+            }
             if frame
                 .last_open
                 .is_some_and(|last| candles[0].0 > last + span)
@@ -1710,28 +1838,24 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
                 // After a long offline interval the provider's bounded window
                 // no longer overlaps. Rebuild from its complete contiguous
                 // history instead of inventing the missing candles.
-                *frame = Frame {
-                    timeframe: tf.into(),
-                    ..Frame::default()
-                };
+                frame.rebuild();
             }
             if frame.formation_start.is_none() {
                 frame.formation_start = Some(history_end.saturating_sub(500 * span));
             }
             if let Some(last) = frame.last_open {
-                if history_end < last {
-                    return Err("Stale market snapshot".into());
-                }
                 if let Some(next) = candles.iter().find(|c| c.0 > last) {
                     if next.0 != last + span {
                         return Err("Missing candles since previous inspection".into());
                     }
                 }
-                for saved in &frame.bars {
-                    if candles.iter().any(|c| c.0 == saved.0 && c != saved) {
-                        return Err("Previously closed candle changed".into());
-                    }
-                }
+            }
+            let changed = frame
+                .bars
+                .iter()
+                .any(|saved| candles.iter().any(|c| c.0 == saved.0 && c != saved));
+            if changed {
+                return Err("Provider history changed during reconstruction; refresh again".into());
             }
             // Only a complete window with a live candle proves the line is
             // current. Partial streaming or failed reads cannot inherit this.
@@ -1749,6 +1873,12 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
                     bar.0 >= frame.formation_start.unwrap(),
                 );
             }
+            // Older packages only checked the line. Reinspection proves the
+            // whole zone from its first-known time before it can be reused.
+            for level in frame.buy.iter_mut().chain(&mut frame.sell) {
+                level.zone_checked |= candles[0].0 <= level.first_known
+                    && candles.last().unwrap().0 + span >= level.first_known;
+            }
             if snapshot.batch_complete.unwrap_or(true)
                 && candles.last().unwrap().0 == history_end
                 && history_end == observed - observed % span - span
@@ -1756,6 +1886,7 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
                 && state.observed_at.is_none_or(|last| observed >= last)
             {
                 frame.checked_at_ms = Some(observed);
+                frame.rebuild_levels = None;
             }
             // Older captured snapshots may replay history, but must not
             // replace a newer quote or invalidate levels formed since it.
@@ -1764,17 +1895,21 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
                 state.observed_at = Some(observed);
                 for frame in &mut state.frames {
                     for level in &mut frame.buy {
-                        level.touched |= price >= level.price;
+                        for bar in &candles {
+                            level.observe(bar, 1);
+                        }
+                        level.touched |= level.captures(observed, price, price, 1);
                         if let Some(current) = &snapshot.current_candle {
-                            level.touched |=
-                                current.0 >= level.first_known && current.2 >= level.price;
+                            level.observe(current, 1);
                         }
                     }
                     for level in &mut frame.sell {
-                        level.touched |= price <= level.price;
+                        for bar in &candles {
+                            level.observe(bar, -1);
+                        }
+                        level.touched |= level.captures(observed, price, price, -1);
                         if let Some(current) = &snapshot.current_candle {
-                            level.touched |=
-                                current.0 >= level.first_known && current.3 <= level.price;
+                            level.observe(current, -1);
                         }
                     }
                 }
@@ -1817,9 +1952,7 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
         if autonomous {
             actions.push(json!({"id":"stop", "label":"Stop new entries", "host":"workspace.stop"}));
         } else {
-            actions.push(
-                json!({"id":"start", "label":"Start local cycles", "host":"workspace.start"}),
-            );
+            actions.push(json!({"id":"start", "label":"Start cycles", "host":"workspace.start"}));
         }
     }
     Ok(Output {
@@ -1835,6 +1968,7 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
         },
         requests,
         resume_action,
+        retired_entry,
     })
 }
 
@@ -1845,11 +1979,7 @@ fn prepare_entry(state: &mut State, observed: i64) -> Result<(), String> {
     if state.entry.as_ref().is_some_and(|e| e.attempted) {
         return Err("An entry is already managed; refresh its exact order instead".into());
     }
-    if !state.complete
-        || state
-            .observed_at
-            .is_none_or(|t| t > observed || observed - t > 60_000)
-    {
+    if !market_is_current(state, observed) {
         return Err("Refresh all six timeframes before preparing an entry".into());
     }
     let (tf, side, level) = candidate(state).ok_or("No untouched entry line ahead of price")?;
@@ -1993,6 +2123,7 @@ fn observe_orders(input: Input<'_>) -> Result<Output<'_>, String> {
         view: WorkspaceView::Orders(view),
         requests,
         resume_action: None,
+        retired_entry: None,
     })
 }
 
@@ -2103,14 +2234,28 @@ fn available_lines(state: &State) -> impl Iterator<Item = (&str, &str, &Level)> 
                         .chain(f.sell.iter().map(move |l| (*tf, "long", l)))
                 })
         })
-        .filter(|(_, _, l)| !l.touched && !l.consumed)
+        .filter(|(_, _, l)| l.zone_checked && !l.touched && !l.consumed)
+}
+
+fn market_is_current(state: &State, now: i64) -> bool {
+    state.complete
+        && state
+            .observed_at
+            .is_some_and(|t| t <= now && now - t <= 60_000)
+        && TIMEFRAMES.iter().all(|(tf, _)| {
+            state.frames.iter().any(|f| {
+                f.timeframe == *tf
+                    && f.checked_at_ms
+                        .is_some_and(|t| t <= now && now - t <= 60_000)
+            })
+        })
 }
 
 fn candidate(state: &State) -> Option<(&str, &str, &Level)> {
     let price = state.current_price?;
     available_lines(state)
         .filter(|(_, side, l)| {
-            (*side == "short" && l.price > price) || (*side == "long" && l.price < price)
+            (*side == "short" && l.bottom > price) || (*side == "long" && l.top < price)
         })
         .min_by(|(atf, _, a), (btf, _, b)| {
             (a.price - price)
@@ -2156,25 +2301,16 @@ fn profit_candidate<'a>(
     now: i64,
 ) -> Option<(&'a str, &'a Level)> {
     let price = state.current_price?;
-    if !state.complete
-        || state
-            .observed_at
-            .is_none_or(|t| t > now || now - t > 60_000)
-        || state.frames.len() != TIMEFRAMES.len()
-        || state
-            .frames
-            .iter()
-            .any(|f| f.checked_at_ms.is_none_or(|t| t > now || now - t > 60_000))
-    {
+    if !market_is_current(state, now) {
         return None;
     }
     available_lines(state)
         .filter(|(_, side, level)| {
             level.first_known <= now
                 && if position.side == "long" {
-                    *side == "short" && level.price > price && level.price > position.average_price
+                    *side == "short" && level.bottom > price && level.price > position.average_price
                 } else {
-                    *side == "long" && level.price < price && level.price < position.average_price
+                    *side == "long" && level.top < price && level.price < position.average_price
                 }
         })
         .min_by(|(atf, _, a), (btf, _, b)| {
@@ -2315,15 +2451,7 @@ fn pending_line(state: &State, entry: &ManagedEntry, now: i64) -> PendingLine {
     {
         return PendingLine::Stale;
     }
-    if !state.complete
-        || !TIMEFRAMES.iter().all(|(tf, _)| {
-            state.frames.iter().any(|f| {
-                f.timeframe == *tf
-                    && f.checked_at_ms
-                        .is_some_and(|t| t <= now && now - t <= 60_000)
-            })
-        })
-    {
+    if !market_is_current(state, now) {
         return PendingLine::Incomplete;
     }
     let plan = &entry.plan;
@@ -2345,6 +2473,9 @@ fn pending_line(state: &State, entry: &ManagedEntry, now: i64) -> PendingLine {
     };
     if line.price != plan.line_price {
         return PendingLine::Moved;
+    }
+    if !line.zone_checked {
+        return PendingLine::Incomplete;
     }
     if line.touched {
         return PendingLine::Touched;
@@ -2375,8 +2506,8 @@ fn pending_line_status(state: &State, entry: &ManagedEntry, now: i64) -> &'stati
         PendingLine::Incomplete => "Pending line: refresh order and zones; complete current market evidence is not available.",
         PendingLine::Missing => "Original line is no longer present. Cancel this exact unfilled entry; replacement waits for confirmed cancellation and flat exposure.",
         PendingLine::Moved => "Original line moved. Cancel this exact unfilled entry; replacement waits for confirmed cancellation and flat exposure.",
-        PendingLine::Touched => "Price reached the original line. Cancellation rechecks the exact order for a fill; market evidence alone cannot authorize replacement.",
-        PendingLine::Valid => "Original line is unchanged and untouched. Keep the existing entry; a nearer alternative does not replace it.",
+        PendingLine::Touched => "Price entered the original zone. Cancellation rechecks the exact order for a fill; market evidence alone cannot authorize replacement.",
+        PendingLine::Valid => "Original line is unchanged and its zone is untouched. Keep the existing entry; a nearer alternative does not replace it.",
     }
 }
 
@@ -2450,7 +2581,7 @@ fn view_for_execution(state: &State, now: i64, autonomous: bool, render_lines: b
     {
         "Saved observation. Refresh zones before using the entry candidate. No order has been sent."
             .into()
-    } else if !state.complete {
+    } else if !market_is_current(state, now) {
         "Refresh the selected instrument to load all six timeframes. No order has been sent.".into()
     } else if let Some((tf, side, level)) = candidate {
         let mut message = format!(
@@ -2525,7 +2656,9 @@ fn view_for_execution(state: &State, now: i64, autonomous: bool, render_lines: b
                 if level.consumed {
                     "Consumed by previous entry"
                 } else if level.touched {
-                    "Touched"
+                    "Zone captured"
+                } else if !level.zone_checked {
+                    "Zone history unverified"
                 } else {
                     "Untouched"
                 },
@@ -2534,7 +2667,7 @@ fn view_for_execution(state: &State, now: i64, autonomous: bool, render_lines: b
         })
         .collect();
     if autonomous {
-        message.push_str("\nLocal cycles are enabled under host authority. New entries use fresh market/account evidence; no eligible line means waiting. Invalidated unfilled entries may be cancelled before replacement. Reducing exits use matching position evidence and a profitable opposite line. Stop disables entry and cancellation, not reducing exits. Exchange-side stop protection remains unverified.");
+        message.push_str("\nCycles are enabled under host authority. New entries use fresh market/account evidence; no eligible line means waiting. Invalidated unfilled entries may be cancelled before replacement. Reducing exits use matching position evidence and a profitable opposite line. Stop disables entry and cancellation, not reducing exits. Exchange-side stop protection remains unverified.");
     }
     let summary = state
         .account
@@ -2545,9 +2678,9 @@ fn view_for_execution(state: &State, now: i64, autonomous: bool, render_lines: b
                 a.account_label,
                 age(now, a.observed_at_ms),
                 if autonomous {
-                    "Local cycles: app must remain open and online."
+                    "Cycles enabled; execution location is shown above."
                 } else {
-                    "Local single-entry workspace; new cycles are not enabled."
+                    "Single-entry workspace; new cycles are not enabled."
                 }
             )
         })
@@ -2787,6 +2920,113 @@ mod tests {
     }
 
     #[test]
+    fn terminal_exit_with_remaining_position_prepares_only_the_observed_remainder() {
+        for status in ["filled", "cancelled", "expired", "rejected"] {
+            let mut state = observed_fill("long", 0.5);
+            fresh_exit_frames(&mut state);
+            state.frames[1].buy.push(exit_level(105.0));
+            let ready = invoke(
+                "exit_ready",
+                serde_json::to_value(state).unwrap(),
+                Value::Null,
+            );
+            let sent = invoke("place_exit", ready["result"]["state"].clone(), Value::Null);
+            let saved = sent["result"]["state"].clone();
+            let total = saved["entry"]["plan"]["quantity"].as_f64().unwrap();
+            let first_exit = total * 0.5;
+            let remaining = if status == "filled" {
+                total - first_exit
+            } else {
+                total
+            };
+            let mut snapshot = lifecycle_snapshot(
+                &saved,
+                json!([{"position_id":"456", "side":"long", "quantity":remaining, "average_price":96.4}]),
+                json!([]),
+                100_000_001,
+            );
+            snapshot["entry"]["status"] = json!("filled");
+            snapshot["entry"]["filled_quantity"] = json!(total);
+            snapshot["exit"] = json!({"account_id":"a".repeat(64), "symbol":"BTC-USDT",
+                "client_order_id":"c".repeat(40), "order_id":"999", "status":status,
+                "filled_quantity":if status == "filled" {first_exit} else {0.0},
+                "average_price":if status == "filled" {105.0} else {0.0}, "observed_at_ms":100_000_001});
+            let refreshed = invoke_at("lifecycle", saved, snapshot, 100_000_001);
+            assert_eq!(refreshed["status"], "executed", "{refreshed}");
+            let restarted = invoke_at(
+                "present",
+                refreshed["result"]["state"].clone(),
+                Value::Null,
+                100_000_001,
+            );
+            assert!(restarted["result"]["state"]["entry"].is_object());
+            assert!(restarted["result"]["state"]["entry"]["profit_exit"].is_null());
+            let next = invoke_at(
+                "exit_ready",
+                restarted["result"]["state"].clone(),
+                Value::Null,
+                100_000_001,
+            );
+            assert_eq!(next["status"], "executed", "{next}");
+            let plan = &next["result"]["view"]["confirmation"]["plan"];
+            assert_eq!(plan["quantity"], remaining);
+            assert_eq!(plan["position_id"], "456");
+            assert_eq!(plan["prepared_at_ms"], 100_000_001);
+            assert_ne!(*plan, sent["result"]["requests"][0]["plan"]);
+            assert!(next["result"]["requests"].as_array().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn live_exit_and_unmatched_position_never_authorize_a_replacement() {
+        for status in ["open", "partial"] {
+            for matching in [true, false] {
+                let mut state = observed_fill("long", 0.5);
+                fresh_exit_frames(&mut state);
+                state.frames[1].buy.push(exit_level(105.0));
+                let ready = invoke(
+                    "exit_ready",
+                    serde_json::to_value(state).unwrap(),
+                    Value::Null,
+                );
+                let sent = invoke("place_exit", ready["result"]["state"].clone(), Value::Null);
+                let saved = sent["result"]["state"].clone();
+                let qty = saved["entry"]["evidence"]["filled_quantity"]
+                    .as_f64()
+                    .unwrap();
+                let mut snapshot = lifecycle_snapshot(
+                    &saved,
+                    json!([{"position_id":if matching {"456"} else {"789"}, "side":"long", "quantity":qty, "average_price":96.4}]),
+                    json!([]),
+                    100_000_001,
+                );
+                snapshot["exit"] = json!({"account_id":"a".repeat(64), "symbol":"BTC-USDT",
+                    "client_order_id":"c".repeat(40), "order_id":"999", "status":status,
+                    "filled_quantity":if status == "partial" {qty / 2.0} else {0.0},
+                    "average_price":if status == "partial" {105.0} else {0.0}, "observed_at_ms":100_000_001});
+                let observed = invoke_at("lifecycle", saved.clone(), snapshot, 100_000_001);
+                assert_eq!(observed["status"], "executed", "{observed}");
+                assert_eq!(
+                    observed["result"]["state"]["entry"]["position"].is_object(),
+                    matching
+                );
+                assert_eq!(
+                    observed["result"]["state"]["entry"]["profit_exit"]["plan"],
+                    saved["entry"]["profit_exit"]["plan"]
+                );
+                let next = invoke_at(
+                    "exit_ready",
+                    observed["result"]["state"].clone(),
+                    Value::Null,
+                    100_000_001,
+                );
+                assert!(next["result"]["view"]["confirmation"].is_null());
+                assert!(next["result"]["requests"].as_array().unwrap().is_empty());
+            }
+        }
+    }
+
+    #[test]
     fn exit_closure_requires_its_terminal_evidence_and_flat_lifecycle() {
         let mut state = observed_fill("long", 1.0);
         fresh_exit_frames(&mut state);
@@ -2813,13 +3053,16 @@ mod tests {
         snapshot["exit"] = evidence.clone();
         let unresolved = invoke_at("lifecycle", saved.clone(), snapshot.clone(), 100_000_001);
         assert!(unresolved["result"]["state"]["entry"].is_object());
+        assert!(unresolved["result"]["retired_entry"].is_null());
         evidence["status"] = json!("filled");
         evidence["filled_quantity"] = json!(qty);
         evidence["average_price"] = json!(105.0);
         snapshot["exit"] = evidence;
+        let plan = saved["entry"]["plan"].clone();
         let closed = invoke_at("lifecycle", saved, snapshot, 100_000_001);
         assert_eq!(closed["status"], "executed", "{closed}");
         assert!(closed["result"]["state"]["entry"].is_null());
+        assert_eq!(closed["result"]["retired_entry"], plan);
     }
 
     #[test]
@@ -2888,6 +3131,9 @@ mod tests {
         state.complete = true;
         state.frames.push(Frame {
             timeframe: "5m".into(),
+            checked_at_ms: Some(100_000_000),
+            last_open: Some(99_600_000),
+            bars: vec![Candle(99_600_000, 100., 101., 99., 100.)],
             sell: vec![Level {
                 origin: 10,
                 first_known: 20,
@@ -2895,10 +3141,21 @@ mod tests {
                 top: 98.0,
                 bottom: 95.0,
                 touched: false,
+                zone_checked: true,
                 consumed: false,
             }],
             ..Frame::default()
         });
+        for (tf, span) in TIMEFRAMES.iter().filter(|(tf, _)| *tf != "5m") {
+            let last = 100_000_000 - 100_000_000 % span - span;
+            state.frames.push(Frame {
+                timeframe: (*tf).into(),
+                checked_at_ms: Some(100_000_000),
+                last_open: Some(last),
+                bars: vec![Candle(last, 100., 101., 99., 100.)],
+                ..Frame::default()
+            });
+        }
         state
     }
 
@@ -3353,6 +3610,7 @@ mod tests {
             top: price + 1.0,
             bottom: price - 1.0,
             touched: false,
+            zone_checked: true,
             consumed: false,
         }
     }
@@ -3431,7 +3689,7 @@ mod tests {
                 .unwrap()
                 .1
                 .price,
-            94.0
+            93.0
         );
     }
 
@@ -3653,6 +3911,7 @@ mod tests {
             top: 99.5,
             bottom: 98.5,
             touched: false,
+            zone_checked: true,
             consumed: false,
         });
         assert_eq!(candidate(&state).unwrap().0, "1h");
@@ -3838,10 +4097,11 @@ mod tests {
             let partial = invoke_at("market", state, quote.clone(), now);
             assert_eq!(partial["status"], "executed", "{partial}");
             state = partial["result"]["state"].clone();
-            assert!(!partial["result"]["view"]["message"]
-                .as_str()
-                .unwrap()
-                .contains("unchanged and untouched"));
+            let parsed: State = serde_json::from_value(state.clone()).unwrap();
+            assert!(
+                pending_line(&parsed, parsed.entry.as_ref().unwrap(), now)
+                    == PendingLine::Incomplete
+            );
             assert!(partial["result"]["view"]["rows"]
                 .as_array()
                 .unwrap()
@@ -3873,19 +4133,22 @@ mod tests {
         assert!(presented["result"]["resume_action"].is_null());
         let reopen = invoke_at("open", state.clone(), Value::Null, now);
         assert_eq!(reopen["result"]["state"], state);
-        assert!(reopen["result"]["view"]["message"]
-            .as_str()
+        let parsed: State = serde_json::from_value(state.clone()).unwrap();
+        assert!(pending_line(&parsed, parsed.entry.as_ref().unwrap(), now) == PendingLine::Missing);
+        assert_eq!(reopen["result"]["state"]["entry"]["plan"], plan);
+        assert!(reopen["result"]["requests"].as_array().unwrap().is_empty());
+        // A one-candle window cannot reconstruct the old zone. Keep the
+        // managed plan, but do not present its old cache as a current zone.
+        assert!(reopen["result"]["view"]["rows"]
+            .as_array()
             .unwrap()
-            .contains("unchanged and untouched"));
-        assert_eq!(
-            reopen["result"]["view"]["rows"].as_array().unwrap().len(),
-            1
-        );
+            .is_empty());
         let stale = invoke_at("open", state.clone(), Value::Null, now + 60_001);
-        assert!(!stale["result"]["view"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("unchanged and untouched"));
+        let parsed: State = serde_json::from_value(stale["result"]["state"].clone()).unwrap();
+        assert!(
+            pending_line(&parsed, parsed.entry.as_ref().unwrap(), now + 60_001)
+                == PendingLine::Stale
+        );
         state["settings"]["entry_margin"] = json!(2.);
         let mut raw = json!({"schema_version":1, "plugin_id":PLUGIN_ID, "host_method":"workspace",
             "action":"refresh_order", "observed_at_ms":now, "state":state});
@@ -3917,10 +4180,11 @@ mod tests {
             );
             if out["status"] == "executed" {
                 assert!(out["result"]["state"]["frames"][5]["checked_at_ms"].is_null());
-                assert!(!out["result"]["view"]["message"]
-                    .as_str()
-                    .unwrap()
-                    .contains("unchanged and untouched"));
+                let parsed: State = serde_json::from_value(out["result"]["state"].clone()).unwrap();
+                assert!(
+                    pending_line(&parsed, parsed.entry.as_ref().unwrap(), now)
+                        == PendingLine::Incomplete
+                );
             } else {
                 assert_eq!(out["status"], "rejected");
             }
@@ -4063,9 +4327,14 @@ mod tests {
             );
             // Six fresh market frames and a fresh account snapshot are needed
             // before the existing prepare action can admit a replacement.
-            let mut fresh = reopened["result"]["state"].clone();
-            fresh["complete"] = json!(true);
-            let replacement = invoke("prepare", fresh, Value::Null);
+            let mut fresh: State =
+                serde_json::from_value(reopened["result"]["state"].clone()).unwrap();
+            let market = entry_state();
+            fresh.frames = market.frames;
+            fresh.complete = market.complete;
+            fresh.observed_at = market.observed_at;
+            fresh.current_price = market.current_price;
+            let replacement = invoke("prepare", serde_json::to_value(fresh).unwrap(), Value::Null);
             assert_eq!(replacement["status"], "executed", "{replacement}");
             assert!(replacement["result"].get("resume_action").is_none());
             assert_eq!(replacement["result"]["state"]["entry"]["attempted"], false);
@@ -4226,17 +4495,22 @@ mod tests {
     fn live_candle_sweep_marks_a_known_line_without_backdating_formation() {
         let mut state = entry_state();
         state.frames[0].sell[0].first_known = 99_900_000;
+        state.frames[2].sell = state.frames[0].sell.clone();
         let out = invoke(
             "market",
             serde_json::to_value(state).unwrap(),
             json!({
             "symbol":"BTC-USDT","timeframe":"5m","candles":[[99_600_000,100.,101.,99.,100.]],
-            "current_price":100.,"current_candle":[99_900_000,100.,101.,96.,100.]}),
+            "current_price":100.,"current_candle":[99_900_000,100.,101.,98.,100.]}),
         );
         assert_eq!(out["status"], "executed", "{out}");
         assert_eq!(
             out["result"]["state"]["frames"][0]["sell"][0]["touched"],
             true
+        );
+        assert_eq!(
+            out["result"]["state"]["frames"][2]["sell"][0]["touched"], true,
+            "The lower-timeframe live candle also captures the known 4H zone"
         );
         let mut frame = Frame {
             buy: vec![Level {
@@ -4246,6 +4520,7 @@ mod tests {
                 top: 106.,
                 bottom: 104.,
                 touched: false,
+                zone_checked: true,
                 consumed: false,
             }],
             ..Frame::default()
@@ -4264,6 +4539,201 @@ mod tests {
             false,
         );
         assert!(frame.buy[0].touched);
+    }
+
+    #[test]
+    fn entering_either_zone_boundary_consumes_eligibility_without_reaching_its_line() {
+        for direction in [1, -1] {
+            let mut level = exit_level(100.0);
+            level.first_known = 600_000;
+            let bar = if direction == 1 {
+                Candle(600_000, 98., 99., 97., 98.)
+            } else {
+                Candle(600_000, 102., 103., 101., 102.)
+            };
+            let mut before = bar.clone();
+            before.0 = 300_000;
+            level.observe(&before, direction);
+            assert!(!level.touched, "No backdated capture");
+            level.observe(&bar, direction);
+            assert!(level.touched, "Boundary equality captures the zone");
+            assert!(if direction == 1 {
+                bar.2 < level.price
+            } else {
+                bar.3 > level.price
+            });
+            let reopened: Level =
+                serde_json::from_str(&serde_json::to_string(&level).unwrap()).unwrap();
+            assert!(reopened.touched);
+        }
+    }
+
+    #[test]
+    fn redrawing_an_older_retained_zone_does_not_rearm_it() {
+        for consumed in [false, true] {
+            let mut frame = Frame::default();
+            frame.swings = [30, 20, 10]
+                .into_iter()
+                .map(|time| Swing {
+                    direction: 1,
+                    time,
+                    price: 100.0,
+                })
+                .collect();
+            let mut captured = exit_level(100.0);
+            captured.origin = 10;
+            captured.first_known = 40;
+            captured.touched = !consumed;
+            captured.consumed = consumed;
+            let mut newer = exit_level(110.0);
+            newer.origin = 50;
+            newer.first_known = 60;
+            frame.buy = vec![newer, captured];
+            frame.cluster(1, 100.0, 2.0, 100);
+            assert_eq!(frame.buy.len(), 2);
+            assert_eq!(frame.buy[0].first_known, 40);
+            assert_eq!(frame.buy[0].consumed, consumed);
+            assert_eq!(frame.buy[0].touched, !consumed);
+        }
+    }
+
+    #[test]
+    fn entry_selection_checks_every_timeframe_and_skips_captured_zones() {
+        for selected in 0..TIMEFRAMES.len() {
+            let mut state = entry_state();
+            fresh_exit_frames(&mut state);
+            for (index, frame) in state.frames.iter_mut().enumerate() {
+                frame
+                    .sell
+                    .push(exit_level(if index == selected { 98.0 } else { 95.0 }));
+            }
+            assert_eq!(candidate(&state).unwrap().0, TIMEFRAMES[selected].0);
+            state.frames[selected].sell[0].observe(&Candle(300_000, 100., 101., 98.5, 100.), -1);
+            assert_ne!(candidate(&state).unwrap().0, TIMEFRAMES[selected].0);
+            let prepared = invoke(
+                "prepare",
+                serde_json::to_value(&state).unwrap(),
+                Value::Null,
+            );
+            assert_eq!(prepared["status"], "executed", "{prepared}");
+            assert_ne!(
+                prepared["result"]["state"]["entry"]["plan"]["timeframe"],
+                TIMEFRAMES[selected].0
+            );
+            for frame in &mut state.frames {
+                frame.sell[0].touched = true;
+            }
+            assert!(candidate(&state).is_none());
+            assert_eq!(
+                invoke("prepare", serde_json::to_value(state).unwrap(), Value::Null)["status"],
+                "rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn incomplete_or_stale_timeframe_cannot_hide_behind_the_complete_flag() {
+        for index in 0..TIMEFRAMES.len() {
+            for timestamp in [None, Some(99_939_999)] {
+                let mut state = entry_state();
+                state.frames[index].checked_at_ms = timestamp;
+                state.validate().unwrap();
+                assert!(!market_is_current(&state, 100_000_000));
+                let output = invoke("prepare", serde_json::to_value(state).unwrap(), Value::Null);
+                assert_eq!(output["status"], "rejected", "{output}");
+            }
+        }
+    }
+
+    #[test]
+    fn older_line_only_state_requires_zone_history_and_preserves_the_managed_order() {
+        for low in [99.0, 97.5] {
+            let mut state = entry_state();
+            state.frames[0].sell[0].first_known = 99_600_000;
+            state.frames[0].bars[0].3 = low;
+            let prepared = invoke("prepare", serde_json::to_value(state).unwrap(), Value::Null);
+            let placed = invoke(
+                "place_entry",
+                prepared["result"]["state"].clone(),
+                Value::Null,
+            );
+            let mut saved = placed["result"]["state"].clone();
+            let entry = saved["entry"].clone();
+            saved["frames"][0]["sell"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("zone_checked");
+            let old: State = serde_json::from_value(saved.clone()).unwrap();
+            assert!(
+                candidate(&old).is_none(),
+                "Old line evidence is not zone evidence"
+            );
+            let refreshed = invoke(
+                "market",
+                saved,
+                json!({
+                    "symbol":"BTC-USDT","timeframe":"5m",
+                    "candles":[[99_600_000,100.,101.,low,100.]],
+                    "current_price":100.,"current_candle":[99_900_000,100.,101.,99.,100.]
+                }),
+            );
+            assert_eq!(refreshed["status"], "executed", "{refreshed}");
+            assert_eq!(refreshed["result"]["state"]["entry"], entry);
+            assert_eq!(
+                refreshed["result"]["state"]["frames"][0]["sell"][0]["zone_checked"],
+                true
+            );
+            assert_eq!(
+                refreshed["result"]["state"]["frames"][0]["sell"][0]["touched"],
+                low == 97.5
+            );
+            assert!(refreshed["result"]["requests"]
+                .as_array()
+                .unwrap()
+                .is_empty());
+            let reopened = invoke("open", refreshed["result"]["state"].clone(), Value::Null);
+            assert_eq!(reopened["result"]["state"], refreshed["result"]["state"]);
+        }
+        let mut uncovered = entry_state();
+        uncovered.frames[0].sell[0].zone_checked = false;
+        let refreshed = invoke(
+            "market",
+            serde_json::to_value(uncovered).unwrap(),
+            json!({
+                "symbol":"BTC-USDT","timeframe":"5m","candles":[[99_600_000,100.,101.,99.,100.]],
+                "current_price":100.,"current_candle":[99_900_000,100.,101.,99.,100.]
+            }),
+        );
+        assert_eq!(refreshed["status"], "executed", "{refreshed}");
+        let state: State = serde_json::from_value(refreshed["result"]["state"].clone()).unwrap();
+        assert!(!state.frames[0].sell[0].zone_checked);
+        assert!(candidate(&state).is_none());
+    }
+
+    #[test]
+    fn final_delivery_rejects_a_zone_capture_even_when_the_line_is_untouched() {
+        let prepared = invoke(
+            "prepare",
+            serde_json::to_value(entry_state()).unwrap(),
+            Value::Null,
+        );
+        let placed = invoke(
+            "place_entry",
+            prepared["result"]["state"].clone(),
+            Value::Null,
+        );
+        let state = placed["result"]["state"].clone();
+        let output = invoke(
+            "validate_entry",
+            state.clone(),
+            json!({
+                "symbol":"BTC-USDT","timeframe":"5m","candles":[[99_600_000,100.,101.,99.,100.]],
+                "history_start_ms":99_600_000,"history_end_ms":99_600_000,"batch_complete":true,
+                "current_price":100.,"current_candle":[99_900_000,100.,101.,97.5,100.]
+            }),
+        );
+        assert_eq!(output["status"], "rejected", "{output}");
+        assert!(97.5 > state["entry"]["plan"]["line_price"].as_f64().unwrap());
     }
 
     #[test]
@@ -4477,9 +4947,16 @@ mod tests {
         for bar in repeated_swings() {
             frame.process(bar, &settings(), 300_000, true);
         }
+        frame.buy[0].touched = true;
+        frame.sell[0].consumed = true;
+        let retained: Vec<_> = frame
+            .buy
+            .iter()
+            .map(|l| (1, l.clone()))
+            .chain(frame.sell.iter().map(|l| (-1, l.clone())))
+            .collect();
         state.frames.push(frame);
         state.account = Some(account());
-        let old_frames = serde_json::to_value(&state.frames).unwrap();
         let mut next = state.settings.clone();
         next.entry_margin = 2.0;
         next.stop_percent = 10.0;
@@ -4488,7 +4965,16 @@ mod tests {
         let out: Value =
             serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&input).unwrap())).unwrap();
         assert_eq!(out["status"], "executed");
-        assert_eq!(out["result"]["state"]["frames"], old_frames);
+        assert_eq!(
+            out["result"]["state"]["frames"][0]["rebuild_levels"],
+            serde_json::to_value(retained).unwrap()
+        );
+        assert_eq!(out["result"]["state"]["complete"], false);
+        assert!(out["result"]["state"]["frames"][0]["checked_at_ms"].is_null());
+        assert!(out["result"]["state"]["frames"][0]["bars"]
+            .as_array()
+            .unwrap()
+            .is_empty());
         assert_eq!(out["result"]["requests"].as_array().unwrap().len(), 7);
         assert_eq!(
             out["result"]["requests"][6]["kind"],
@@ -4767,17 +5253,7 @@ mod tests {
 
     #[test]
     fn touched_levels_stay_visible_and_cannot_be_entry_candidates() {
-        let mut state = State::new(settings());
-        let mut frame = Frame {
-            timeframe: "5m".into(),
-            ..Frame::default()
-        };
-        for bar in repeated_swings() {
-            frame.process(bar, &settings(), 300_000, true);
-        }
-        state.frames.push(frame);
-        state.current_price = Some(100.);
-        state.complete = true;
+        let mut state = entry_state();
         assert!(view(&state, 100_000_000)["message"]
             .as_str()
             .unwrap()
@@ -4930,11 +5406,17 @@ mod tests {
 
     #[test]
     fn offline_gap_rebuilds_from_available_history_without_phantom_candles() {
-        let initial = invoke(
-            "market",
-            Value::Null,
-            json!({"symbol":"BTC-USDT","timeframe":"5m","candles":repeated_swings(),"current_price":100.}),
-        );
+        let inspect = |state: Value, bars: &[Candle]| {
+            let end = bars.last().unwrap().0;
+            let raw = json!({"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
+                "action":"market","state":state,"observed_at_ms":end+300_123,
+                "snapshot":{"symbol":"BTC-USDT","timeframe":"5m","candles":bars,
+                    "history_start_ms":bars[0].0,"history_end_ms":end,"batch_complete":true,
+                    "current_price":100.,"current_candle":[end+300_000,100.,100.5,99.5,100.]}});
+            serde_json::from_slice::<Value>(&evaluate_json(&serde_json::to_vec(&raw).unwrap()))
+                .unwrap()
+        };
+        let initial = inspect(Value::Null, &repeated_swings());
         let bars: Vec<_> = repeated_swings()
             .into_iter()
             .map(|mut c| {
@@ -4942,15 +5424,90 @@ mod tests {
                 c
             })
             .collect();
-        let snapshot =
-            json!({"symbol":"BTC-USDT","timeframe":"5m","candles":bars,"current_price":100.});
-        let resumed = invoke(
-            "market",
-            initial["result"]["state"].clone(),
-            snapshot.clone(),
-        );
-        let fresh = invoke("market", Value::Null, snapshot);
+        let resumed = inspect(initial["result"]["state"].clone(), &bars);
+        let fresh = inspect(Value::Null, &bars);
         assert_eq!(resumed["status"], "executed");
         assert_eq!(resumed["result"]["state"], fresh["result"]["state"]);
+    }
+
+    #[test]
+    fn refresh_rebuilds_revised_history_and_survives_interruption_without_order_effects() {
+        let mut bars = repeated_swings();
+        for bar in &mut bars {
+            bar.0 += 100_200_000;
+        }
+        let start = bars[0].0;
+        let end = bars.last().unwrap().0;
+        let now = end + 300_123;
+        let inspect = |state: Value, batch: &[Candle], complete: bool| {
+            let raw = json!({"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
+                "action":"market","state":state,"observed_at_ms":now,
+                "snapshot":{"symbol":"BTC-USDT","timeframe":"5m","candles":batch,
+                    "history_start_ms":start,"history_end_ms":end,"batch_complete":complete,
+                    "current_price":100.,"current_candle":[end+300_000,100.,100.5,99.5,100.]}});
+            serde_json::from_slice::<Value>(&evaluate_json(&serde_json::to_vec(&raw).unwrap()))
+                .unwrap()
+        };
+        let initial = inspect(Value::Null, &bars, true);
+        assert_eq!(initial["status"], "executed", "{initial}");
+        let mut saved: State = serde_json::from_value(initial["result"]["state"].clone()).unwrap();
+        let frame = &mut saved.frames[0];
+        for level in frame.buy.iter_mut().chain(&mut frame.sell) {
+            level.touched = true;
+            level.consumed = true;
+        }
+        let managed = managed_pending_state(now);
+        saved.entry = managed.entry;
+        saved.account = managed.account;
+        let entry = serde_json::to_value(&saved.entry).unwrap();
+        let index = bars.len() - 2;
+        bars[index].4 += 0.25;
+        let retry = invoke_at(
+            "refresh_order",
+            serde_json::to_value(saved).unwrap(),
+            Value::Null,
+            now,
+        );
+        assert_eq!(retry["status"], "executed", "{retry}");
+        assert_eq!(retry["result"]["state"]["entry"], entry);
+        let requests = retry["result"]["requests"].as_array().unwrap();
+        assert_eq!(requests.len(), 7);
+        assert_eq!(requests[0]["kind"], "order.snapshot.read");
+        for ((tf, _), request) in TIMEFRAMES.iter().zip(&requests[1..]) {
+            assert_eq!(request["kind"], "market.candles.read");
+            assert_eq!(request["timeframe"], *tf);
+        }
+        assert_eq!(retry["result"]["state"]["complete"], false);
+        let partial = inspect(retry["result"]["state"].clone(), &bars[..12], false);
+        assert_eq!(partial["status"], "executed", "{partial}");
+        let reopened = invoke_at("open", partial["result"]["state"].clone(), Value::Null, now);
+        assert_eq!(reopened["result"]["state"], partial["result"]["state"]);
+        let resumed = inspect(reopened["result"]["state"].clone(), &bars[..12], false);
+        assert_eq!(resumed["result"]["state"], partial["result"]["state"]);
+        let complete = inspect(resumed["result"]["state"].clone(), &bars[12..], true);
+        assert_eq!(complete["status"], "executed", "{complete}");
+        let actual: State = serde_json::from_value(complete["result"]["state"].clone()).unwrap();
+        actual.validate().unwrap();
+        assert_eq!(complete["result"]["state"]["entry"], entry);
+        assert!(actual.frames[0].rebuild_levels.is_none());
+        assert_eq!(actual.frames[0].checked_at_ms, Some(now));
+        let fresh: State =
+            serde_json::from_value(inspect(Value::Null, &bars, true)["result"]["state"].clone())
+                .unwrap();
+        assert_eq!(actual.frames[0].atr, fresh.frames[0].atr);
+        assert_eq!(actual.frames[0].bars, fresh.frames[0].bars);
+        assert_eq!(
+            serde_json::to_value(&actual.frames[0].swings).unwrap(),
+            serde_json::to_value(&fresh.frames[0].swings).unwrap()
+        );
+        assert!(actual.frames[0]
+            .buy
+            .iter()
+            .chain(&actual.frames[0].sell)
+            .all(|l| l.touched && l.consumed));
+        assert!(complete["result"]["requests"]
+            .as_array()
+            .unwrap()
+            .is_empty());
     }
 }
