@@ -6,6 +6,9 @@ members = [
 ]
 resolver = "2"
 
+[workspace.package]
+license = "MIT"
+
 [profile.release]
 lto = true
 opt-level = "z"
