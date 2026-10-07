@@ -10,24 +10,33 @@
       "display_name": "Capsule Chat (Test Plugin)",
       "version": "0.2.2",
       "package_kind": "zip",
-      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.9-plugins/capsule_chat_test_plugin-0.2.2.zip",
-      "sha256_hex": "dc416c95041b4a6b889b82cf0fdbbe721db7d6ffee8547569fe23036f24cc862"
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.10-plugins/capsule_chat_test_plugin-0.2.2.zip",
+      "sha256_hex": "bcd157368012f2f5276cddeb661e21c17d1f815ce60e3b368a42dc98db9e9a4a"
     },
     {
       "id": "moltbook-ambassador",
       "plugin_id": "hivra.contract.moltbook-ambassador.v1",
       "display_name": "Moltbook Ambassador",
-      "version": "0.7.2",
+      "version": "0.7.3",
       "package_kind": "zip",
-      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.9-plugins/moltbook_ambassador_draft_plugin-0.7.2.zip",
-      "sha256_hex": "90726d71d33cbaca4f8f60edb118d38eaaea9ab80a99df3c0125b26f604bb2b3"
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.10-plugins/moltbook_ambassador_draft_plugin-0.7.3.zip",
+      "sha256_hex": "d8648de5170d3b25ba16d3ad1ccf2c863c48da0b9b3b913b91b88c13afcac4ad"
+    },
+    {
+      "id": "jack-ventura",
+      "plugin_id": "hivra.contract.jack-ventura.v1",
+      "display_name": "Jack Ventura",
+      "version": "0.1.13",
+      "package_kind": "zip",
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.10-plugins/jack_ventura_plugin-0.1.13.zip",
+      "sha256_hex": "c2de33db0cbf88ad4fcb22b0b508fa78e28aa762c64a6972e59df790f566fd17"
     }
   ],
   "signatures": [
     {
       "algorithm": "ed25519",
       "key_id": "f4757da54ecb6f16431bcfb4fcc947633d6f68c9b4576b69ddb61fc4fe2de7a3",
-      "signature_hex": "a732053585b14b303815c5583f7970329d67da7131985b5a751b30d88e64b10e1d3644233aa8b8fdcad81d46d2fe48a1cc2b30319af2a3ab7a4f1daa7dae6a0b"
+      "signature_hex": "039638ed87f29c9bf24fe09f98b6378059c69d04270f297d3a8e962aed46492d289e1cfed90c5ef65f0be2fb4f2dca9ebdc1d0e6cf402e5ea09acdbfd22a8500"
     }
   ]
 }

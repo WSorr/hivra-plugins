@@ -70,6 +70,11 @@ struct HeartbeatInput {
     host_method: String,
     observed_at_utc: String,
     allowed_topics: Vec<String>,
+    current_newest_post_id: Option<String>,
+    processed_post_ids: Vec<String>,
+    observed_post_ids: Vec<String>,
+    continuation_cursor: Option<String>,
+    checkpoint_exclude_post_ids: Vec<String>,
     home: HeartbeatHomeInput,
     feed: Vec<HeartbeatFeedPostInput>,
 }
@@ -143,6 +148,16 @@ struct CanonicalHeartbeatPlan {
     publish_allowed: bool,
     human_review_required: bool,
     safety_flags: Vec<String>,
+    checkpoint: CanonicalHeartbeatCheckpoint,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct CanonicalHeartbeatCheckpoint {
+    schema_version: u32,
+    newest_post_id: Option<String>,
+    processed_post_ids: Vec<String>,
+    last_observed_at_utc: String,
+    continuation_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -347,9 +362,15 @@ fn evaluate_request(raw: &str) -> Result<Value, String> {
             serde_json::to_value(evaluate_draft(input)?).map_err(|error| error.to_string())?
         }
         PLAN_HEARTBEAT_METHOD => {
-            let input = serde_json::from_value::<HeartbeatInput>(value)
-                .map_err(|error| format!("invalid_heartbeat_input: {error}"))?;
-            serde_json::to_value(evaluate_heartbeat(input)?).map_err(|error| error.to_string())?
+            if value.get("planning_scope").and_then(Value::as_str) == Some("public_change") {
+                serde_json::to_value(evaluate_public_change_selection(&value)?)
+                    .map_err(|error| error.to_string())?
+            } else {
+                let input = serde_json::from_value::<HeartbeatInput>(value)
+                    .map_err(|error| format!("invalid_heartbeat_input: {error}"))?;
+                serde_json::to_value(evaluate_heartbeat(input)?)
+                    .map_err(|error| error.to_string())?
+            }
         }
         PLAN_ENGAGEMENT_METHOD => {
             let input = serde_json::from_value::<EngagementInput>(value)
@@ -370,6 +391,156 @@ fn evaluate_request(raw: &str) -> Result<Value, String> {
         _ => return Err("unsupported_method: unknown host_method".to_string()),
     };
     Ok(output)
+}
+
+fn evaluate_public_change_selection(value: &Value) -> Result<HeartbeatOutput, String> {
+    let schema_version = value
+        .get("schema_version")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "public_change schema_version is invalid".to_string())?;
+    let plugin_id = value
+        .get("plugin_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "public_change plugin_id is invalid".to_string())?;
+    let host_method = value
+        .get("host_method")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "public_change host_method is invalid".to_string())?;
+    let observed_at_utc = value
+        .get("observed_at_utc")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "public_change observed_at_utc is invalid".to_string())?;
+    let allowed_topics = value
+        .get("allowed_topics")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "public_change allowed_topics is invalid".to_string())?;
+    let resume_prepared = value
+        .get("resume_prepared")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| "public_change resume_prepared is invalid".to_string())?;
+    let changes = value
+        .get("public_changes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "public_change public_changes is invalid".to_string())?;
+
+    validate_identity(schema_version as u32, plugin_id)?;
+    if host_method != PLAN_HEARTBEAT_METHOD {
+        return Err("invalid_public_change_method".to_string());
+    }
+    validate_utc(observed_at_utc, "observed_at_utc")?;
+    if allowed_topics.is_empty() || allowed_topics.len() > 16 {
+        return Err("allowed_topics must contain 1..16 items".to_string());
+    }
+    let topics = allowed_topics
+        .iter()
+        .map(|topic| {
+            let topic = topic
+                .as_str()
+                .ok_or_else(|| "allowed_topics contains an invalid item".to_string())?;
+            if topic.is_empty() || topic.len() > 64 {
+                return Err("allowed_topics contains an invalid item".to_string());
+            }
+            Ok(topic)
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if changes.len() > 100 {
+        return Err("public_changes exceeds its limit".to_string());
+    }
+
+    let mut selected_source_id = None;
+    let mut last_prepared_source_id = None;
+    for change in changes {
+        let object = change
+            .as_object()
+            .ok_or_else(|| "public_change item is invalid".to_string())?;
+        if object.len() != 3
+            || !object.contains_key("source_id")
+            || !object.contains_key("category")
+            || !object.contains_key("draft_hash_hex")
+        {
+            return Err("public_change item shape is invalid".to_string());
+        }
+        let source_id = object
+            .get("source_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "public_change source_id is invalid".to_string())?;
+        let category = object
+            .get("category")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "public_change category is invalid".to_string())?;
+        if source_id.is_empty()
+            || source_id.len() > 128
+            || !source_id
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || "._-".contains(character))
+            || category.is_empty()
+            || category.len() > 64
+            || !category.chars().all(|character| {
+                character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+            })
+            || !topics.iter().any(|topic| *topic == category)
+        {
+            return Err("public_change item is outside the allowed topics".to_string());
+        }
+        let draft_hash = object
+            .get("draft_hash_hex")
+            .ok_or_else(|| "public_change draft_hash_hex is missing".to_string())?;
+        let selectable =
+            !source_id.starts_with("github-") || source_id.starts_with("github-news-v2-");
+        match draft_hash {
+            Value::Null => {
+                if selectable && selected_source_id.is_none() {
+                    selected_source_id = Some(source_id.to_string());
+                }
+            }
+            Value::String(hash)
+                if hash.len() == 64
+                    && hash.chars().all(|character| character.is_ascii_hexdigit()) =>
+            {
+                if selectable {
+                    last_prepared_source_id = Some(source_id.to_string());
+                }
+            }
+            _ => return Err("public_change draft_hash_hex is invalid".to_string()),
+        }
+    }
+    if selected_source_id.is_none() && resume_prepared {
+        selected_source_id = last_prepared_source_id;
+    }
+
+    let candidate_post_ids = selected_source_id.clone().into_iter().collect::<Vec<_>>();
+    let canonical = CanonicalHeartbeatPlan {
+        schema_version: ABI_SCHEMA_VERSION,
+        plugin_id: PLUGIN_ID.to_string(),
+        contract_kind: HEARTBEAT_CONTRACT_KIND.to_string(),
+        observed_at_utc: observed_at_utc.to_string(),
+        priority: "public_change".to_string(),
+        reason: if candidate_post_ids.is_empty() {
+            "No eligible public change is available.".to_string()
+        } else {
+            "WASM selected one Capsule-scoped public change.".to_string()
+        },
+        candidate_post_ids,
+        publish_allowed: false,
+        human_review_required: true,
+        safety_flags: vec![
+            "remote_content_untrusted".to_string(),
+            "no_external_effect".to_string(),
+            "public_change_selection_only".to_string(),
+        ],
+        checkpoint: CanonicalHeartbeatCheckpoint {
+            schema_version: ABI_SCHEMA_VERSION,
+            newest_post_id: None,
+            processed_post_ids: Vec::new(),
+            last_observed_at_utc: observed_at_utc.to_string(),
+            continuation_cursor: None,
+        },
+    };
+    let canonical_json = serde_json::to_string(&canonical).map_err(|error| error.to_string())?;
+    Ok(HeartbeatOutput {
+        plan_hash_hex: sha256_hex(canonical_json.as_bytes()),
+        canonical_json,
+    })
 }
 
 fn evaluate_delegated_reply(input: DelegatedReplyInput) -> Result<DelegatedReplyOutput, String> {
@@ -787,6 +958,61 @@ fn evaluate_heartbeat(input: HeartbeatInput) -> Result<HeartbeatOutput, String> 
     if input.feed.len() > 25 {
         return Err("feed exceeds its page limit".to_string());
     }
+    if input.processed_post_ids.len() > 500 {
+        return Err("processed_post_ids exceeds its limit".to_string());
+    }
+    if input.observed_post_ids.len() > 25 {
+        return Err("observed_post_ids exceeds its page limit".to_string());
+    }
+    if input.checkpoint_exclude_post_ids.len() > 25 {
+        return Err("checkpoint_exclude_post_ids exceeds its page limit".to_string());
+    }
+    if input
+        .processed_post_ids
+        .iter()
+        .chain(input.observed_post_ids.iter())
+        .chain(input.checkpoint_exclude_post_ids.iter())
+        .any(|id| id.is_empty() || id.len() > 256)
+    {
+        return Err("checkpoint contains an invalid post id".to_string());
+    }
+    if input
+        .processed_post_ids
+        .iter()
+        .collect::<std::collections::HashSet<_>>()
+        .len()
+        != input.processed_post_ids.len()
+    {
+        return Err("processed_post_ids contains duplicates".to_string());
+    }
+    if input
+        .observed_post_ids
+        .iter()
+        .collect::<std::collections::HashSet<_>>()
+        .len()
+        != input.observed_post_ids.len()
+    {
+        return Err("observed_post_ids contains duplicates".to_string());
+    }
+    if input.checkpoint_exclude_post_ids.iter().any(|id| {
+        !input
+            .observed_post_ids
+            .iter()
+            .any(|observed| observed == id)
+            || input.processed_post_ids.contains(id)
+    }) {
+        return Err("checkpoint exclusion is not a new observed post".to_string());
+    }
+    if let Some(newest_post_id) = input.current_newest_post_id.as_ref() {
+        if !input.processed_post_ids.contains(newest_post_id) {
+            return Err("current_newest_post_id is not processed".to_string());
+        }
+    }
+    if let Some(cursor) = input.continuation_cursor.as_ref() {
+        if cursor.is_empty() || cursor.len() > 2048 {
+            return Err("continuation_cursor is invalid".to_string());
+        }
+    }
 
     let mut activity_candidates = Vec::new();
     for activity in &input.home.activity_on_own_posts {
@@ -814,6 +1040,10 @@ fn evaluate_heartbeat(input: HeartbeatInput) -> Result<HeartbeatOutput, String> 
     }
 
     let mut feed_candidates = Vec::new();
+    let processed_post_ids = input
+        .processed_post_ids
+        .iter()
+        .collect::<std::collections::HashSet<_>>();
     for post in &input.feed {
         if post.post_id.is_empty()
             || post.post_id.len() > 256
@@ -830,7 +1060,11 @@ fn evaluate_heartbeat(input: HeartbeatInput) -> Result<HeartbeatOutput, String> 
             return Err("feed contains an invalid post".to_string());
         }
         validate_utc(&post.created_at_utc, "feed.created_at_utc")?;
-        if post.is_verified && !post.is_spam && feed_candidates.len() < 5 {
+        if !processed_post_ids.contains(&post.post_id)
+            && post.is_verified
+            && !post.is_spam
+            && feed_candidates.len() < 5
+        {
             feed_candidates.push(post.post_id.clone());
         }
     }
@@ -854,6 +1088,42 @@ fn evaluate_heartbeat(input: HeartbeatInput) -> Result<HeartbeatOutput, String> 
             Vec::new(),
         )
     };
+    let excluded = input
+        .checkpoint_exclude_post_ids
+        .iter()
+        .collect::<std::collections::HashSet<_>>();
+    let mut processed_post_ids = Vec::new();
+    for post_id in input
+        .observed_post_ids
+        .iter()
+        .chain(input.processed_post_ids.iter())
+    {
+        if excluded.contains(post_id) || processed_post_ids.contains(post_id) {
+            continue;
+        }
+        processed_post_ids.push(post_id.clone());
+        if processed_post_ids.len() == 500 {
+            break;
+        }
+    }
+    let newest_post_id = input
+        .observed_post_ids
+        .iter()
+        .find(|post_id| !excluded.contains(post_id))
+        .cloned()
+        .or(input.current_newest_post_id);
+    if let Some(newest_post_id) = newest_post_id.as_ref() {
+        if !processed_post_ids.contains(newest_post_id) {
+            return Err("computed newest_post_id is not processed".to_string());
+        }
+    }
+    let checkpoint = CanonicalHeartbeatCheckpoint {
+        schema_version: ABI_SCHEMA_VERSION,
+        newest_post_id,
+        processed_post_ids,
+        last_observed_at_utc: input.observed_at_utc.clone(),
+        continuation_cursor: input.continuation_cursor,
+    };
     let canonical = CanonicalHeartbeatPlan {
         schema_version: ABI_SCHEMA_VERSION,
         plugin_id: PLUGIN_ID.to_string(),
@@ -868,6 +1138,7 @@ fn evaluate_heartbeat(input: HeartbeatInput) -> Result<HeartbeatOutput, String> 
             "remote_content_untrusted".to_string(),
             "no_external_effect".to_string(),
         ],
+        checkpoint,
     };
     let canonical_json = serde_json::to_string(&canonical).map_err(|error| error.to_string())?;
     Ok(HeartbeatOutput {
@@ -957,9 +1228,8 @@ mod tests {
     #[test]
     fn allows_neutral_verification_token_language() {
         let mut value = input();
-        value.facts = vec![
-            "The provider action token remains undisclosed during verification.".to_string(),
-        ];
+        value.facts =
+            vec!["The provider action token remains undisclosed during verification.".to_string()];
         value.reviewed_body =
             "The provider action token remains undisclosed during verification, while the existing publication owner validates the proposed answer."
                 .to_string();
@@ -983,6 +1253,11 @@ mod tests {
             host_method: PLAN_HEARTBEAT_METHOD.to_string(),
             observed_at_utc: "2026-07-29T10:00:00.000Z".to_string(),
             allowed_topics: vec!["hivra-development".to_string()],
+            current_newest_post_id: None,
+            processed_post_ids: Vec::new(),
+            observed_post_ids: vec!["post-1".to_string()],
+            continuation_cursor: Some("next".to_string()),
+            checkpoint_exclude_post_ids: Vec::new(),
             home: HeartbeatHomeInput {
                 unread_notification_count: 2,
                 activity_on_own_posts: vec![HeartbeatActivityInput {
@@ -1023,6 +1298,128 @@ mod tests {
             .canonical_json
             .contains("\"candidate_post_ids\":[\"own-post-1\"]"));
         assert!(output.canonical_json.contains("\"publish_allowed\":false"));
+        let canonical: Value =
+            serde_json::from_str(&output.canonical_json).expect("canonical plan parses");
+        assert_eq!(
+            canonical["checkpoint"]["processed_post_ids"],
+            serde_json::json!(["post-1"])
+        );
+        assert_eq!(canonical["checkpoint"]["newest_post_id"], "post-1");
+        assert_eq!(canonical["checkpoint"]["continuation_cursor"], "next");
+
+        let mut invalid = input;
+        invalid.observed_post_ids.push("post-1".to_string());
+        assert!(evaluate_heartbeat(invalid).is_err());
+
+        let mut processed = HeartbeatInput {
+            schema_version: 1,
+            plugin_id: PLUGIN_ID.to_string(),
+            host_method: PLAN_HEARTBEAT_METHOD.to_string(),
+            observed_at_utc: "2026-07-29T10:00:00.000Z".to_string(),
+            allowed_topics: vec!["hivra-development".to_string()],
+            current_newest_post_id: Some("post-1".to_string()),
+            processed_post_ids: vec!["post-1".to_string()],
+            observed_post_ids: vec!["post-1".to_string()],
+            continuation_cursor: None,
+            checkpoint_exclude_post_ids: Vec::new(),
+            home: HeartbeatHomeInput {
+                unread_notification_count: 0,
+                activity_on_own_posts: Vec::new(),
+                suggested_actions: Vec::new(),
+            },
+            feed: vec![HeartbeatFeedPostInput {
+                post_id: "post-1".to_string(),
+                title: "Reliable effects".to_string(),
+                author_name: "Agent".to_string(),
+                submolt_name: "general".to_string(),
+                score: 3,
+                comment_count: 1,
+                is_verified: true,
+                is_spam: false,
+                created_at_utc: "2026-07-29T09:59:00.000Z".to_string(),
+            }],
+        };
+        let processed_output = evaluate_heartbeat(processed.clone()).expect("processed input");
+        let processed_plan: Value =
+            serde_json::from_str(&processed_output.canonical_json).expect("processed plan parses");
+        assert_eq!(processed_plan["priority"], "idle");
+        processed.processed_post_ids.clear();
+        processed.current_newest_post_id = None;
+        let unprocessed_output = evaluate_heartbeat(processed).expect("unprocessed input");
+        let unprocessed_plan: Value = serde_json::from_str(&unprocessed_output.canonical_json)
+            .expect("unprocessed plan parses");
+        assert_eq!(unprocessed_plan["priority"], "inspect_feed");
+    }
+
+    #[test]
+    fn public_change_selection_is_bounded_and_deterministic() {
+        let input = serde_json::json!({
+            "schema_version": 1,
+            "plugin_id": PLUGIN_ID,
+            "host_method": PLAN_HEARTBEAT_METHOD,
+            "observed_at_utc": "2026-07-29T10:00:00.000Z",
+            "allowed_topics": ["hivra"],
+            "planning_scope": "public_change",
+            "resume_prepared": false,
+            "public_changes": [
+                {"source_id": "github-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "category": "hivra", "draft_hash_hex": null},
+                {"source_id": "capsule-change-1", "category": "hivra", "draft_hash_hex": null},
+                {"source_id": "capsule-change-2", "category": "hivra", "draft_hash_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+            ]
+        });
+        let raw = serde_json::to_string(&input).expect("input serializes");
+        let first = evaluate_abi_json(&raw);
+        let second = evaluate_abi_json(&raw);
+        assert_eq!(first, second);
+        let envelope: AbiEnvelope = serde_json::from_slice(&first).expect("envelope parses");
+        let output: HeartbeatOutput =
+            serde_json::from_value(envelope.result.expect("selection output"))
+                .expect("plan parses");
+        let canonical: Value =
+            serde_json::from_str(&output.canonical_json).expect("canonical parses");
+        assert_eq!(canonical["priority"], "public_change");
+        assert_eq!(
+            canonical["candidate_post_ids"],
+            serde_json::json!(["capsule-change-1"])
+        );
+        assert_eq!(canonical["publish_allowed"], false);
+
+        let mut resumed = input;
+        resumed["public_changes"] = serde_json::json!([
+            {"source_id": "capsule-change-2", "category": "hivra", "draft_hash_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+        ]);
+        resumed["resume_prepared"] = serde_json::json!(true);
+        let envelope: AbiEnvelope =
+            serde_json::from_slice(&evaluate_abi_json(&resumed.to_string()))
+                .expect("envelope parses");
+        let output: HeartbeatOutput =
+            serde_json::from_value(envelope.result.expect("resumed output")).expect("plan parses");
+        let canonical: Value =
+            serde_json::from_str(&output.canonical_json).expect("canonical parses");
+        assert_eq!(
+            canonical["candidate_post_ids"],
+            serde_json::json!(["capsule-change-2"])
+        );
+    }
+
+    #[test]
+    fn public_change_selection_rejects_mutated_snapshot_shape() {
+        let input = serde_json::json!({
+            "schema_version": 1,
+            "plugin_id": PLUGIN_ID,
+            "host_method": PLAN_HEARTBEAT_METHOD,
+            "observed_at_utc": "2026-07-29T10:00:00.000Z",
+            "allowed_topics": ["hivra"],
+            "planning_scope": "public_change",
+            "resume_prepared": false,
+            "public_changes": [
+                {"source_id": "capsule-change-1", "category": "other", "draft_hash_hex": null}
+            ]
+        });
+        let envelope: AbiEnvelope = serde_json::from_slice(&evaluate_abi_json(&input.to_string()))
+            .expect("envelope parses");
+        assert_eq!(envelope.status, "rejected");
+        assert_eq!(envelope.error_code.as_deref(), Some("invalid_args"));
     }
 
     #[test]
