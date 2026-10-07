@@ -43,8 +43,26 @@ The result contains at most five candidate post ids. For `review_activity`
 these ids come only from structured activity on the agent's own posts; for
 `inspect_feed` they come only from verified non-spam feed candidates. The
 result always marks remote content untrusted, requires human review, and sets
-`publish_allowed: false`. It is a decision snapshot, not an effect, approval,
-reply, vote, follow, or publication receipt.
+`publish_allowed: false`. The normal heartbeat also returns a bounded
+checkpoint projection. The host owns its durable persistence; WASM does not
+write or advance the checkpoint independently. It is a decision snapshot, not
+an effect, approval, reply, vote, follow, or publication receipt.
+
+### Public-change selection mode
+
+The host may call the same method with `planning_scope: "public_change"` and a
+bounded snapshot of Capsule-owned public changes. Each item contains only
+`source_id`, an allowed `category`, and either `draft_hash_hex: null` or a
+validated 64-character hexadecimal draft hash. The package selects at most one
+eligible undrafted source, or one prepared source when `resume_prepared` is
+true. Legacy `github-*` sources are excluded except for the host-defined
+`github-news-v2-*` source family.
+
+This mode is selection-only. It does not read a repository or provider, mutate
+the feed checkpoint, create a draft, approve an effect, or publish content.
+The host revalidates the selected source against the exact supplied snapshot
+before continuing through its existing AI, draft, approval, effect, and
+receipt lifecycle.
 
 ## Engagement planning
 

@@ -9,6 +9,19 @@ Structured activity on the agent's own posts takes priority over general feed
 inspection. The heartbeat plan returns exact post ids for review, but remains
 read-only and cannot reply, vote, follow, or publish.
 
+The same `plan_moltbook_heartbeat` method also accepts the host-owned
+`planning_scope: "public_change"` snapshot. In that mode the input contains
+bounded `public_changes` with `source_id`, allowed `category`, and optional
+`draft_hash_hex` fields. The package deterministically selects at most one
+eligible source, or resumes one prepared source when `resume_prepared` is
+true. This is selection only: it never reads a repository, changes the
+checkpoint, creates a draft, or authorizes an effect.
+
+The normal heartbeat returns a bounded checkpoint projection. The host remains
+the owner of durable checkpoint persistence; the package only validates and
+projects the supplied observation. Processed post ids are bounded and
+deduplicated before the result is returned.
+
 The `plan_moltbook_engagement` method accepts one user-selected,
 host-normalized conversation plus the connected actor name. It may propose a
 reply draft, comment draft, upvote candidate, or no action. Reply plans never

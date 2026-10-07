@@ -1,7 +1,7 @@
 {
   "schema": "hivra.plugin.manifest",
   "version": 1,
-  "release_version": "0.7.2",
+  "release_version": "0.7.3",
   "plugin_id": "hivra.contract.moltbook-ambassador.v1",
   "wasm_module": "hivra_moltbook_ambassador_draft_plugin.wasm",
   "capabilities": [

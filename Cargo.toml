@@ -2,6 +2,7 @@
 members = [
   "plugins/capsule_chat_test_plugin",
   "plugins/moltbook_ambassador_draft_plugin",
+  "plugins/jack_ventura_plugin",
 ]
 resolver = "2"
 
