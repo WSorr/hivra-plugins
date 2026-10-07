@@ -2,6 +2,9 @@
 
 External WASM plugins repository for Hivra.
 
+This repository is licensed under the MIT License. See
+[LICENSE](LICENSE). Individual dependencies retain their own licenses.
+
 This repo contains plugin packages and build/release tooling only.
 Core app runtime, ledger, and host execution stay in the main Hivra repository.
 

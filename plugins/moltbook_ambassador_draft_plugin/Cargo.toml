@@ -2,7 +2,7 @@
 name = "hivra_moltbook_ambassador_draft_plugin"
 version = "0.7.3"
 edition = "2021"
-license = "MIT"
+license.workspace = true
 publish = false
 
 [lib]
