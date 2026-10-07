@@ -11,7 +11,7 @@
       "version": "0.2.2",
       "package_kind": "zip",
       "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.10-plugins/capsule_chat_test_plugin-0.2.2.zip",
-      "sha256_hex": "bcd157368012f2f5276cddeb661e21c17d1f815ce60e3b368a42dc98db9e9a4a"
+      "sha256_hex": "dc416c95041b4a6b889b82cf0fdbbe721db7d6ffee8547569fe23036f24cc862"
     },
     {
       "id": "moltbook-ambassador",
@@ -20,7 +20,7 @@
       "version": "0.7.3",
       "package_kind": "zip",
       "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.10-plugins/moltbook_ambassador_draft_plugin-0.7.3.zip",
-      "sha256_hex": "d8648de5170d3b25ba16d3ad1ccf2c863c48da0b9b3b913b91b88c13afcac4ad"
+      "sha256_hex": "8a506534134b4c166332da445154cc7961f900470b49a6e320f9114e06a702b4"
     },
     {
       "id": "jack-ventura",
@@ -29,14 +29,14 @@
       "version": "0.1.13",
       "package_kind": "zip",
       "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.10-plugins/jack_ventura_plugin-0.1.13.zip",
-      "sha256_hex": "c2de33db0cbf88ad4fcb22b0b508fa78e28aa762c64a6972e59df790f566fd17"
+      "sha256_hex": "0b95b8f0047e652d8b801c19d2f1287fed9da0f4f99d856347d7754e3f760c61"
     }
   ],
   "signatures": [
     {
       "algorithm": "ed25519",
       "key_id": "f4757da54ecb6f16431bcfb4fcc947633d6f68c9b4576b69ddb61fc4fe2de7a3",
-      "signature_hex": "039638ed87f29c9bf24fe09f98b6378059c69d04270f297d3a8e962aed46492d289e1cfed90c5ef65f0be2fb4f2dca9ebdc1d0e6cf402e5ea09acdbfd22a8500"
+      "signature_hex": "80e20c76ab47bdd580d65e9751bb3287af8e2230fd979b57250cdc02e2b245e4ed740798eadc9cdbd5bc02a96ea33629211d1b5ffe6213a5a3252a837c0c2a0d"
     }
   ]
 }
