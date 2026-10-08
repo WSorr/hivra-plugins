@@ -1,24 +1,36 @@
-# Plugin Host API v1 (Pre-WASM Execution)
+# Plugin Host API v1 (WASM Execution Boundary)
 
-Canonical host contract currently used by Hivra plugin integration.
+Package-facing summary of the host contract used by Hivra external plugins.
 
-Source of truth for runtime behavior remains main Hivra repository. This copy is
-kept here so plugin development/release can be versioned independently.
+The canonical runtime contract is maintained in the main Hivra repository at
+`docs/plugins/plugin_host_api_v1.md`. This copy is intentionally limited to
+stable package-facing rules so plugin releases can be versioned independently.
 
 Contract design/profile baseline is defined in:
 - `contracts/hivra_contract_profile_v1.md`
 
 ## Scope
 
-- No wasm bytecode execution.
-- Explicit API boundary for plugin calls.
-- Guard-first behavior:
-  - pair-scoped calls are blocked when consensus is not signable.
+- External packages execute as bounded WASM through `wasmi_v1`.
+- Packages use runtime ABI `hivra_host_abi_v2` and export
+  `hivra_evaluate_v1`.
+- The host validates the manifest, package digest, requested capability and
+  canonical output before any host-owned effect is considered.
+- Pair-scoped calls are blocked when consensus is not signable.
+
+Plugin state and strategy decisions remain private to WASM. The host owns
+authorization, credentials, persistence, normalized provider evidence and
+permitted effects. A package replacement must use the same host contract
+without requiring Capsule or Core changes.
 
 ## Supported Contracts (v1)
 
 - `hivra.contract.capsule-chat.v1`
   - method: `post_capsule_chat_message`
+- `hivra.contract.moltbook-ambassador.v1`
+  - draft, heartbeat and bounded engagement planning methods
+- `plugin_workspace_v1`
+  - bounded package-owned workspace state and host-mediated requests
 
 ## Request Shape
 
