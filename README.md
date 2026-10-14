@@ -83,6 +83,13 @@ python3 scripts/sign_catalog.py \
   --release-tag v0.2.8-plugins
 ```
 
+The release sequence is intentionally staged: pull requests and `main` verify
+source, tests, canonical archive shape, and reproducibility without requiring
+the previous catalog digest. After the candidate is downloaded, bind and sign
+the catalog in the release PR. Only then create the matching `v*` tag; tagged
+CI requires the catalog release tag and every artifact digest to match before
+publishing assets.
+
 ## Included test plugin scaffolds
 
 - `hivra.contract.capsule-chat.v1`

@@ -9,6 +9,7 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
+from typing import Optional
 from urllib.parse import urlparse
 
 
@@ -84,7 +85,7 @@ def verify_signature(catalog: dict) -> bool:
     return False
 
 
-def validate_catalog(catalog: dict) -> None:
+def validate_catalog(catalog: dict, expected_release_tag: Optional[str] = None) -> None:
     if catalog.get("schema") != "hivra.plugin.catalog":
         fail("unsupported schema")
     if catalog.get("version") != 2:
@@ -128,6 +129,13 @@ def validate_catalog(catalog: dict) -> None:
             fail(f"{entry_id}: latest release URLs are forbidden")
         if not re.search(r"/releases/download/[^/]+/[^/]+$", parsed.path):
             fail(f"{entry_id}: download_url must pin a release tag")
+        if expected_release_tag is not None:
+            release_tag = parsed.path.split("/releases/download/", 1)[1].split("/", 1)[0]
+            if release_tag != expected_release_tag:
+                fail(
+                    f"{entry_id}: catalog release tag {release_tag!r} does not "
+                    f"match requested release tag {expected_release_tag!r}"
+                )
 
     if not verify_signature(catalog):
         fail("catalog has no valid signature from a trusted signer")
@@ -149,40 +157,79 @@ def run_negative_self_tests(catalog: dict) -> None:
         fail("signature mutation was accepted")
 
 
-def validate_dist(catalog: dict, dist_dir: Path) -> None:
+def _read_canonical_artifact(artifact_path: Path) -> tuple[dict, str, str, str]:
+    try:
+        with zipfile.ZipFile(artifact_path) as archive:
+            archive_entries = archive.infolist()
+            if [item.filename for item in archive_entries] != [
+                "plugin/manifest.json",
+                "plugin/module.wasm",
+            ]:
+                fail(f"{artifact_path.name}: archive entry order is not canonical")
+            for item in archive_entries:
+                if (
+                    item.date_time != (1980, 1, 1, 0, 0, 0)
+                    or item.compress_type != zipfile.ZIP_STORED
+                    or item.create_system != 3
+                    or item.external_attr != 0o100644 << 16
+                    or item.extra
+                    or item.comment
+                ):
+                    fail(f"{artifact_path.name}: archive metadata is not canonical")
+            manifest_bytes = archive.read("plugin/manifest.json")
+            manifest = json.loads(manifest_bytes)
+            module_digest = hashlib.sha256(archive.read("plugin/module.wasm")).hexdigest()
+    except (KeyError, UnicodeDecodeError, json.JSONDecodeError, zipfile.BadZipFile) as error:
+        fail(f"{artifact_path.name}: invalid plugin archive: {error}")
+    if not isinstance(manifest, dict):
+        fail(f"{artifact_path.name}: manifest must be an object")
+    plugin_id = str(manifest.get("plugin_id", "")).strip()
+    version = str(manifest.get("release_version", "")).strip()
+    if not plugin_id or not version:
+        fail(f"{artifact_path.name}: manifest identity is incomplete")
+    return (
+        manifest,
+        hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
+        hashlib.sha256(manifest_bytes).hexdigest(),
+        module_digest,
+    )
+
+
+def validate_dist(catalog: dict, dist_dir: Path, check_digests: bool = True) -> None:
+    if not check_digests:
+        artifacts = sorted(dist_dir.glob("*.zip"))
+        if not artifacts:
+            fail(f"no plugin artifacts found in {dist_dir}")
+        seen_plugin_ids: set[str] = set()
+        for artifact_path in artifacts:
+            manifest, actual_digest, manifest_digest, module_digest = _read_canonical_artifact(
+                artifact_path
+            )
+            plugin_id = str(manifest["plugin_id"]).strip()
+            if plugin_id in seen_plugin_ids:
+                fail(f"duplicate plugin artifact for {plugin_id}")
+            seen_plugin_ids.add(plugin_id)
+            print(
+                "canonical artifact shape: "
+                f"file={artifact_path.name} plugin_id={plugin_id} "
+                f"version={manifest['release_version']} zip={actual_digest} "
+                f"manifest={manifest_digest} wasm={module_digest}"
+            )
+        return
+
     mismatches = []
     for entry in catalog["entries"]:
         artifact_name = Path(urlparse(entry["download_url"]).path).name
         artifact_path = dist_dir / artifact_name
         if not artifact_path.is_file():
             fail(f"{entry['id']}: missing built artifact {artifact_name}")
-        actual_digest = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
-        try:
-            with zipfile.ZipFile(artifact_path) as archive:
-                archive_entries = archive.infolist()
-                if [item.filename for item in archive_entries] != [
-                    "plugin/manifest.json",
-                    "plugin/module.wasm",
-                ]:
-                    fail(f"{entry['id']}: archive entry order is not canonical")
-                for item in archive_entries:
-                    if (
-                        item.date_time != (1980, 1, 1, 0, 0, 0)
-                        or item.compress_type != zipfile.ZIP_STORED
-                        or item.create_system != 3
-                        or item.external_attr != 0o100644 << 16
-                        or item.extra
-                        or item.comment
-                    ):
-                        fail(f"{entry['id']}: archive metadata is not canonical")
-                manifest_digest = hashlib.sha256(
-                    archive.read("plugin/manifest.json")
-                ).hexdigest()
-                wasm_digest = hashlib.sha256(
-                    archive.read("plugin/module.wasm")
-                ).hexdigest()
-        except (KeyError, zipfile.BadZipFile) as error:
-            fail(f"{entry['id']}: invalid plugin archive: {error}")
+        manifest, actual_digest, manifest_digest, wasm_digest = _read_canonical_artifact(
+            artifact_path
+        )
+        if manifest.get("plugin_id") != entry.get("plugin_id"):
+            fail(f"{entry['id']}: artifact plugin_id does not match catalog")
+        if manifest.get("release_version") != entry.get("version"):
+            fail(f"{entry['id']}: artifact release_version does not match catalog")
         print(
             "catalog artifact hashes: "
             f"id={entry['id']} zip={actual_digest} "
@@ -202,6 +249,15 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--dist-dir", type=Path)
+    parser.add_argument(
+        "--allow-unbound-artifacts",
+        action="store_true",
+        help="Validate canonical package shape without requiring current catalog digests.",
+    )
+    parser.add_argument(
+        "--expected-release-tag",
+        help="Require every catalog URL to use this release tag.",
+    )
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parent.parent
@@ -210,12 +266,18 @@ def main() -> None:
     if not isinstance(catalog, dict):
         fail("catalog root must be a JSON object")
 
-    validate_catalog(catalog)
+    if args.allow_unbound_artifacts and args.expected_release_tag:
+        fail("--allow-unbound-artifacts cannot be combined with --expected-release-tag")
+    validate_catalog(catalog, args.expected_release_tag)
     if args.self_test:
         run_negative_self_tests(catalog)
         print("catalog signature negative self-tests passed")
     if args.dist_dir is not None:
-        validate_dist(catalog, args.dist_dir)
+        validate_dist(
+            catalog,
+            args.dist_dir,
+            check_digests=not args.allow_unbound_artifacts,
+        )
         print("catalog artifact digest validation passed")
     print(f"catalog validation passed: {len(catalog['entries'])} entries")
 

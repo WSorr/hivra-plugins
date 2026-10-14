@@ -10,6 +10,24 @@ def fail(message: str) -> None:
     raise SystemExit(1)
 
 
+def cargo_package_version(cargo_path: Path) -> str:
+    """Read the package version without requiring a Python TOML dependency."""
+    cargo = cargo_path.read_text(encoding="utf-8")
+    package_match = re.search(
+        r"(?ms)^\[package\]\s*(.*?)(?=^\[|\Z)",
+        cargo,
+    )
+    if package_match is None:
+        fail(f"{cargo_path.parent.name}: Cargo.toml has no [package] section")
+    version_match = re.search(
+        r'(?m)^version\s*=\s*"([^"\n]+)"\s*$',
+        package_match.group(1),
+    )
+    if version_match is None:
+        fail(f"{cargo_path.parent.name}: Cargo package version is required")
+    return version_match.group(1).strip()
+
+
 root = Path(__file__).resolve().parent.parent
 plugin_dirs = sorted(path for path in (root / "plugins").iterdir() if path.is_dir())
 if not plugin_dirs:
@@ -61,6 +79,12 @@ for plugin_dir in plugin_dirs:
     release_version = str(manifest.get("release_version", "")).strip()
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?", release_version):
         fail(f"{plugin_dir.name}: invalid release_version")
+    cargo_version = cargo_package_version(cargo_path)
+    if cargo_version != release_version:
+        fail(
+            f"{plugin_dir.name}: manifest release_version {release_version} "
+            f"does not match Cargo package version {cargo_version}"
+        )
 
     contract_kind = str(manifest.get("contract", {}).get("kind", "")).strip()
     if not contract_kind:

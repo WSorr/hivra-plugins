@@ -161,8 +161,7 @@ fn evaluate(input: ChatInput) -> Result<ChatOutput, String> {
         message_text: text.to_string(),
         created_at_utc: created.to_string(),
     };
-    let canonical_json =
-        serde_json::to_string(&canonical).map_err(|error| error.to_string())?;
+    let canonical_json = serde_json::to_string(&canonical).map_err(|error| error.to_string())?;
     Ok(ChatOutput {
         envelope_hash_hex: sha256_hex(canonical_json.as_bytes()),
         canonical_json,
