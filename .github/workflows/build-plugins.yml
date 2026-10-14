@@ -20,6 +20,7 @@ jobs:
         uses: dtolnay/rust-toolchain@1.93.0
         with:
           targets: wasm32-unknown-unknown
+          components: rustfmt
 
       - name: Build canonical candidate A
         run: ./scripts/build_all_plugins.sh
@@ -43,6 +44,7 @@ jobs:
         uses: dtolnay/rust-toolchain@1.93.0
         with:
           targets: wasm32-unknown-unknown
+          components: rustfmt
 
       - name: Build canonical candidate B
         run: ./scripts/build_all_plugins.sh
@@ -67,6 +69,7 @@ jobs:
         uses: dtolnay/rust-toolchain@1.93.0
         with:
           targets: wasm32-unknown-unknown
+          components: rustfmt
 
       - name: Download canonical candidate A
         uses: actions/download-artifact@v4
