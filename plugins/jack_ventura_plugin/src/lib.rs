@@ -1184,12 +1184,10 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
                 .entry
                 .as_ref()
                 .is_some_and(|e| e.attempted && !e.not_sent())
-                && (settings.symbol == state.settings.symbol
-                    && (settings != state.settings || input.action == "connect"))
+                && settings.symbol == state.settings.symbol
+                && settings != state.settings
             {
-                return Err(
-                    "Reconcile the managed order before changing its account or settings".into(),
-                );
+                return Err("Reconcile the managed order before changing its settings".into());
             }
             if state
                 .entry
@@ -1759,6 +1757,23 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
                         .into(),
                 );
             }
+            // Credentials may be renewed while an order is unresolved, but
+            // they must still address the account that owns that attempt.
+            // Admission precedes the host's secure credential write.
+            if state
+                .entry
+                .iter()
+                .chain(state.parked.iter().filter_map(|saved| saved.entry.as_ref()))
+                .any(|entry| {
+                    entry.attempted
+                        && !entry.not_sent()
+                        && entry.plan.account_id != account.account_id
+                })
+            {
+                return Err(
+                    "Reconnect the same BingX account to reconcile its managed orders".into(),
+                );
+            }
             if state
                 .account
                 .as_ref()
@@ -1944,7 +1959,8 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
         if actions.len() >= 4 {
             if let Some(index) = actions
                 .iter()
-                .position(|a| a["id"] == "connect" || a["id"] == "inspect")
+                .position(|a| a["id"] == "inspect")
+                .or_else(|| actions.iter().position(|a| a["id"] == "list_orders"))
             {
                 actions.remove(index);
             }
@@ -2687,8 +2703,9 @@ fn view_for_execution(state: &State, now: i64, autonomous: bool, render_lines: b
         .unwrap_or_else(|| {
             "BingX LIVE / account not connected. Observation works without keys.".into()
         });
+    let connect = json!({"id":"connect", "label":if state.account.is_some() {"Reconnect account"} else {"Connect account"}, "host":"bingx.account.connect"});
     let mut actions = vec![
-        json!({"id":"connect", "label":if state.account.is_some() {"Reconnect account"} else {"Connect account"}, "host":"bingx.account.connect"}),
+        connect.clone(),
         json!({"id":"inspect", "label":"Refresh zones / preview"}),
     ];
     let mut confirmation = Value::Null;
@@ -2699,6 +2716,7 @@ fn view_for_execution(state: &State, now: i64, autonomous: bool, render_lines: b
             } else {
                 vec![json!({"id":"refresh_order", "label":"Refresh order or switch instrument"})]
             };
+            actions.insert(0, connect);
             if let Some(cancel) = pending_cancellation(state, now) {
                 actions.push(json!({"id":"cancel_entry", "label":"Cancel invalidated entry", "host":"bingx.order.submit"}));
                 confirmation = cancel;
@@ -4991,6 +5009,108 @@ mod tests {
             .unwrap()
             .remove("stop_percent");
         assert_eq!(invoke("open", old, Value::Null)["status"], "executed");
+    }
+
+    #[test]
+    fn reconnect_managed_account_preserves_entry_and_survives_reopen() {
+        let now = 100_000_000;
+        for mut state in [managed_pending_state(now), observed_fill("long", 0.5)] {
+            // A lost response must not prevent replacing the credentials
+            // needed to reconcile that exact attempt.
+            for unknown in [false, true] {
+                if unknown && state.entry.as_ref().unwrap().position.is_some() {
+                    continue;
+                }
+                if unknown {
+                    state.entry.as_mut().unwrap().evidence = None;
+                }
+                let saved = serde_json::to_value(&state).unwrap();
+                let input = json!({"schema_version":1,"plugin_id":PLUGIN_ID,
+                    "host_method":"workspace", "action":"connect", "state":saved,
+                    "settings":state.settings, "observed_at_ms":now});
+                let connected: Value =
+                    serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&input).unwrap()))
+                        .unwrap();
+                assert_eq!(connected["status"], "executed", "{connected}");
+                assert_eq!(connected["result"]["state"], saved);
+                assert_eq!(
+                    connected["result"]["requests"],
+                    json!([{
+                        "kind":"account.connect", "provider":"bingx", "symbol":"BTC-USDT"
+                    }])
+                );
+
+                let mut refreshed = account();
+                refreshed.available_margin = 25.0;
+                let admitted = invoke("account", saved.clone(), json!(refreshed));
+                assert_eq!(admitted["status"], "executed", "{admitted}");
+                assert_eq!(admitted["result"]["state"]["entry"], saved["entry"]);
+                assert!(admitted["result"]["requests"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty());
+                let restored: State =
+                    serde_json::from_value(admitted["result"]["state"].clone()).unwrap();
+                restored.validate().unwrap();
+                let reopened = invoke("open", json!(restored), Value::Null);
+                assert_eq!(reopened["status"], "executed", "{reopened}");
+                assert_eq!(reopened["result"]["state"]["entry"], saved["entry"]);
+                let actions = reopened["result"]["view"]["actions"].as_array().unwrap();
+                assert!(actions.iter().any(|a| a["host"] == "bingx.account.connect"));
+
+                let mut other = account();
+                other.account_id = "b".repeat(64);
+                let rejected = invoke("account", saved, json!(other));
+                assert_eq!(rejected["status"], "rejected", "{rejected}");
+            }
+        }
+    }
+
+    #[test]
+    fn reconnect_checks_parked_orders_but_allows_account_change_without_them() {
+        let mut parked = managed_pending_state(100_000_000);
+        let mut next_settings = parked.settings.clone();
+        next_settings.symbol = "XRP-USDT".into();
+        parked.select_instrument(next_settings).unwrap();
+        let mut other = account();
+        other.symbol = "XRP-USDT".into();
+        other.account_id = "b".repeat(64);
+        let rejected = invoke("account", json!(parked), json!(other));
+        assert_eq!(rejected["status"], "rejected", "{rejected}");
+
+        let mut idle = State::new(settings());
+        idle.account = Some(account());
+        let mut other = account();
+        other.account_id = "b".repeat(64);
+        let admitted = invoke("account", json!(idle), json!(other));
+        assert_eq!(admitted["status"], "executed", "{admitted}");
+    }
+
+    #[test]
+    fn reconnect_remains_available_beside_cancel_and_stop_within_action_budget() {
+        let now = 100_000_000;
+        let mut state = managed_pending_state(now);
+        state
+            .frames
+            .iter_mut()
+            .find(|f| f.timeframe == "5m")
+            .unwrap()
+            .sell
+            .clear();
+        assert!(pending_cancellation(&state, now).is_some());
+        let input = json!({"schema_version":1,"plugin_id":PLUGIN_ID,
+            "host_method":"workspace", "action":"present", "state":state,
+            "observed_at_ms":now,
+            "execution":{"account_id":"a".repeat(64),"symbol":"BTC-USDT","allow_new_entries":true}});
+        let output: Value =
+            serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&input).unwrap())).unwrap();
+        assert_eq!(output["status"], "executed", "{output}");
+        let actions = output["result"]["view"]["actions"].as_array().unwrap();
+        assert!(actions.len() <= 4);
+        for id in ["connect", "refresh_order", "cancel_entry", "stop"] {
+            assert!(actions.iter().any(|a| a["id"] == id), "{id}: {actions:?}");
+        }
+        assert!(output["result"]["requests"].as_array().unwrap().is_empty());
     }
 
     #[test]

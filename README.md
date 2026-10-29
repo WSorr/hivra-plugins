@@ -103,7 +103,12 @@ publishing assets.
   quantity and stop previews from margin and existing directional leverage.
   Keys remain in the host; advanced settings and calculation evidence are
   optional. It can prepare one immutable entry for explicit host confirmation
-  and interpret exact provider-order evidence after restart. The host reads
+  and interpret exact provider-order evidence after restart.
+  Renewing credentials for the same BingX account remains available while an
+  order or position is managed, including an unknown submission outcome.
+  Account admission preserves that attempt and rejects another account while
+  current or parked instruments still have managed orders. It does not grant Start.
+  The host reads
   current selected-instrument open orders; WASM presents their transient
   list without adopting manual orders or storing another order history.
   The host owns signing and the existing durable effect journal; uncertain outcomes do not
