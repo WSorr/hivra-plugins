@@ -1948,10 +1948,6 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
         ),
     );
     if let Some(account) = &state.account {
-        if input.execution.is_some() && !autonomous {
-            let message = presentation["message"].as_str().unwrap().to_owned();
-            presentation["message"] = json!(format!("{message}\nNew entries are stopped; reducing exits may continue under the unexpired host grant."));
-        }
         presentation["schedule"] = json!({"action":"cycle", "interval_seconds":60,
             "account_id":account.account_id, "symbol":state.settings.symbol,
             "max_margin":state.settings.entry_margin, "max_stop_percent":state.settings.stop_percent});
@@ -2586,7 +2582,7 @@ fn view_for_execution(state: &State, now: i64, autonomous: bool, render_lines: b
                 format!("{}: {} limit at {} / order {} / {} / filled {} at {} / observed {}. Stop {} was requested, but position protection and PnL are not verified. {}",
                 p.symbol, p.side, p.price, e.order_id.as_deref().unwrap_or("unknown"), e.status,
                 e.filled_quantity, e.average_price, age(now,e.observed_at_ms), p.stop_price,
-                if autonomous {"Cycles reconcile this entry and any reducing exit before reentry."} else {"New entries are not enabled. Reducing exits use explicit confirmation or an unexpired cycle grant."})
+                if autonomous {"Cycles reconcile this entry and any reducing exit before reentry."} else {"Refresh the exact order and current position before preparing a reducing exit."})
             }
         } else {
             "Entry outcome unknown. Refresh the exact order; do not submit a second entry. No position protection or PnL is verified.".into()
@@ -2683,7 +2679,7 @@ fn view_for_execution(state: &State, now: i64, autonomous: bool, render_lines: b
         })
         .collect();
     if autonomous {
-        message.push_str("\nCycles are enabled under host authority. New entries use fresh market/account evidence; no eligible line means waiting. Invalidated unfilled entries may be cancelled before replacement. Reducing exits use matching position evidence and a profitable opposite line. Stop disables entry and cancellation, not reducing exits. Exchange-side stop protection remains unverified.");
+        message.push_str("\nEach cycle uses fresh market/account evidence; no eligible line means waiting. Invalidated unfilled entries may be cancelled before replacement. Reducing exits use matching position evidence and a profitable opposite line. Exchange-side stop protection remains unverified.");
     }
     let summary = state
         .account
@@ -3362,6 +3358,39 @@ mod tests {
             "execution":{"account_id":"a".repeat(64), "symbol":"BTC-USDT", "allow_new_entries":allowed}
         });
         serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap()
+    }
+
+    #[test]
+    fn disabled_entry_projection_does_not_invent_management_authority() {
+        let cases = [
+            ("candidate", serde_json::to_value(entry_state()).unwrap()),
+            ("open", lifecycle_state("open", 0.0)),
+            ("partial", lifecycle_state("partial", 0.5)),
+            ("filled", lifecycle_state("filled", 1.0)),
+            ("unknown", lifecycle_state("unknown", 0.0)),
+        ];
+        for (label, state) in cases {
+            let ungranted = invoke_at("open", state.clone(), Value::Null, 100_000_001);
+            let entries_disabled = cycle_invoke("open", state.clone(), false);
+            assert_eq!(ungranted["status"], "executed", "{label}");
+            assert_eq!(entries_disabled["status"], "executed", "{label}");
+            // This projection does not distinguish Stop, expiry and revocation.
+            // Only the host can present the remaining execution authority.
+            assert_eq!(
+                entries_disabled["result"]["view"], ungranted["result"]["view"],
+                "{label}"
+            );
+            assert_eq!(entries_disabled["result"]["state"], state, "{label}");
+            assert_eq!(
+                entries_disabled["result"]["requests"], ungranted["result"]["requests"],
+                "{label}"
+            );
+            assert!(entries_disabled["result"]["requests"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|r| r["kind"].as_str().unwrap().ends_with(".read")));
+        }
     }
 
     #[test]

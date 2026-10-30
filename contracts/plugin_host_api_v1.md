@@ -23,6 +23,13 @@ authorization, credentials, persistence, normalized provider evidence and
 permitted effects. A package replacement must use the same host contract
 without requiring Capsule or Core changes.
 
+The workspace execution projection's `allow_new_entries` describes only entry
+admission. A false value does not distinguish Stop, expiry, full revocation or
+other unavailable authority. The host presents the current execution status and
+owns the remaining effect permissions; packages must not infer management or
+reducing-exit permission from this entry flag. Package lifecycle observations
+and strategy explanations remain package-owned.
+
 ## Supported Contracts (v1)
 
 - `hivra.contract.capsule-chat.v1`
