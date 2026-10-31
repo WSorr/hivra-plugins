@@ -24,10 +24,20 @@ struct Settings {
     symbol: String,
     detection_length: usize,
     margin: f64,
+    #[serde(default = "all_timeframes", skip_serializing_if = "is_all_timeframes")]
+    timeframes: String,
     #[serde(default = "default_entry_margin")]
     entry_margin: f64,
     #[serde(default = "default_stop_percent")]
     stop_percent: f64,
+}
+
+fn all_timeframes() -> String {
+    "all".into()
+}
+
+fn is_all_timeframes(value: &String) -> bool {
+    value == "all"
 }
 
 fn default_entry_margin() -> f64 {
@@ -43,6 +53,7 @@ impl Default for Settings {
             symbol: "BTC-USDT".into(),
             detection_length: 7,
             margin: 6.9,
+            timeframes: all_timeframes(),
             entry_margin: default_entry_margin(),
             stop_percent: default_stop_percent(),
         }
@@ -51,6 +62,9 @@ impl Default for Settings {
 
 impl Settings {
     fn validate(&self) -> Result<(), String> {
+        if !matches!(self.timeframes.as_str(), "all" | "5m") {
+            return Err("Timeframes must be all or 5m".into());
+        }
         let parts: Vec<_> = self.symbol.split('-').collect();
         if self.symbol.len() > 64
             || parts.len() != 2
@@ -494,13 +508,27 @@ impl State {
 
     fn request_market(&mut self, requests: &mut Vec<Value>) {
         self.complete = false;
+        let required: Vec<_> = self.required_timeframes().collect();
         for frame in &mut self.frames {
-            frame.rebuild();
+            if required.iter().any(|(tf, _)| *tf == frame.timeframe) {
+                frame.rebuild();
+            }
         }
-        for (tf, _) in TIMEFRAMES {
+        for (tf, _) in required {
             requests.push(json!({"kind":"market.candles.read", "provider":"bingx",
                 "symbol":self.settings.symbol, "timeframe":tf, "limit":600}));
         }
+    }
+
+    fn required_timeframes(&self) -> impl Iterator<Item = (&'static str, i64)> + '_ {
+        TIMEFRAMES.into_iter().filter(|(tf, _)| {
+            self.settings.timeframes == "all"
+                || *tf == "5m"
+                || self
+                    .entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.plan.timeframe == *tf)
+        })
     }
 
     fn request_recovery(&self, requests: &mut Vec<Value>) {
@@ -1180,12 +1208,14 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
                     settings = state.settings.clone();
                 }
             }
+            let mut retained_settings = state.settings.clone();
+            retained_settings.timeframes = settings.timeframes.clone();
             if state
                 .entry
                 .as_ref()
                 .is_some_and(|e| e.attempted && !e.not_sent())
                 && settings.symbol == state.settings.symbol
-                && settings != state.settings
+                && settings != retained_settings
             {
                 return Err("Reconcile the managed order before changing its settings".into());
             }
@@ -1929,8 +1959,11 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
                     }
                 }
             }
-            state.complete =
-                tf == "5m" && state.frames.len() == 6 && snapshot.batch_complete.unwrap_or(true);
+            state.complete = tf == "5m"
+                && state.required_timeframes().all(|(required, _)| {
+                    state.frames.iter().any(|frame| frame.timeframe == required)
+                })
+                && snapshot.batch_complete.unwrap_or(true);
         }
         _ => return Err("Unsupported action".into()),
     }
@@ -1992,7 +2025,7 @@ fn prepare_entry(state: &mut State, observed: i64) -> Result<(), String> {
         return Err("An entry is already managed; refresh its exact order instead".into());
     }
     if !market_is_current(state, observed) {
-        return Err("Refresh all six timeframes before preparing an entry".into());
+        return Err("Refresh the selected timeframes before preparing an entry".into());
     }
     let (tf, side, level) = candidate(state).ok_or("No untouched entry line ahead of price")?;
     let (price, quantity, stop_price, margin, leverage) =
@@ -2234,6 +2267,7 @@ fn same_price(a: f64, b: f64) -> bool {
 fn available_lines(state: &State) -> impl Iterator<Item = (&str, &str, &Level)> {
     TIMEFRAMES
         .iter()
+        .filter(|(tf, _)| state.settings.timeframes == "all" || *tf == "5m")
         .flat_map(|(tf, _)| {
             state
                 .frames
@@ -2254,9 +2288,9 @@ fn market_is_current(state: &State, now: i64) -> bool {
         && state
             .observed_at
             .is_some_and(|t| t <= now && now - t <= 60_000)
-        && TIMEFRAMES.iter().all(|(tf, _)| {
+        && state.required_timeframes().all(|(tf, _)| {
             state.frames.iter().any(|f| {
-                f.timeframe == *tf
+                f.timeframe == tf
                     && f.checked_at_ms
                         .is_some_and(|t| t <= now && now - t <= 60_000)
             })
@@ -2533,7 +2567,7 @@ fn view_for_execution(state: &State, now: i64, autonomous: bool, render_lines: b
     // Candle processing and full presentation have separate bounded invocations.
     // The existing resume action renders after all provider evidence is saved.
     if render_lines && (state.entry.is_none() || state.complete) {
-        for (tf, _) in TIMEFRAMES {
+        for (tf, _) in state.required_timeframes() {
             if let Some(frame) = state.frames.iter().find(|f| f.timeframe == tf) {
                 for (side, levels) in [("short", &frame.buy), ("long", &frame.sell)] {
                     for level in levels {
@@ -2594,7 +2628,7 @@ fn view_for_execution(state: &State, now: i64, autonomous: bool, render_lines: b
         "Saved observation. Refresh zones before using the entry candidate. No order has been sent."
             .into()
     } else if !market_is_current(state, now) {
-        "Refresh the selected instrument to load all six timeframes. No order has been sent.".into()
+        "Refresh the selected instrument and timeframes. No order has been sent.".into()
     } else if let Some((tf, side, level)) = candidate {
         let mut message = format!(
             "Entry candidate: {side} at {} on {}. Observation only; no order has been sent.",
@@ -2686,14 +2720,19 @@ fn view_for_execution(state: &State, now: i64, autonomous: bool, render_lines: b
         .as_ref()
         .map(|a| {
             format!(
-                "{} / account data read {}. {}",
+                "{} / account data read {}. {}{}",
                 a.account_label,
                 age(now, a.observed_at_ms),
                 if autonomous {
                     "Cycles enabled; execution location is shown above."
                 } else {
                     "Single-entry workspace; new cycles are not enabled."
-                }
+                },
+                if state.settings.timeframes == "5m" {
+                    " New entries and profit targets use 5m only. An existing order keeps its original plan."
+                } else {
+                    ""
+                },
             )
         })
         .unwrap_or_else(|| {
@@ -2746,6 +2785,7 @@ fn view_for_execution(state: &State, now: i64, autonomous: bool, render_lines: b
                 "source":{"kind":"market.instruments.read", "provider":"bingx"}},
             {"id":"entry_margin", "label":"Margin per entry (USDT, before leverage)", "type":"number", "value":state.settings.entry_margin},
             {"id":"stop_percent", "label":"Stop loss (% of entry margin)", "type":"number", "value":state.settings.stop_percent},
+            {"id":"timeframes", "label":"Timeframes (all or 5m)", "type":"text", "value":state.settings.timeframes, "advanced":true},
             {"id":"detection_length", "label":"Detection length", "type":"integer", "value":state.settings.detection_length, "advanced":true},
             {"id":"margin", "label":"Cluster margin", "type":"number", "value":state.settings.margin, "advanced":true}
         ],
@@ -2824,6 +2864,139 @@ pub unsafe extern "C" fn hivra_evaluate_v1(ptr: u32, len: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn timeframe_scope_defaults_to_existing_settings_and_rejects_unknown_modes() {
+        let old = serde_json::to_value(settings()).unwrap();
+        assert!(old.get("timeframes").is_none());
+        let restored: Settings = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(restored.timeframes, "all");
+        assert_eq!(serde_json::to_value(restored).unwrap(), old);
+        let mut invalid = settings();
+        invalid.timeframes = "1m".into();
+        assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn five_minute_scope_selects_entry_and_exit_without_other_frames() {
+        let mut state = entry_state();
+        state.settings.timeframes = "5m".into();
+        state.frames[1].sell.push(exit_level(98.5));
+        assert_eq!(candidate(&state).unwrap().0, "5m");
+        state.frames.retain(|frame| frame.timeframe == "5m");
+        assert!(market_is_current(&state, 100_000_000));
+        let prepared = invoke("prepare", serde_json::to_value(state).unwrap(), Value::Null);
+        assert_eq!(prepared["status"], "executed", "{prepared}");
+        assert_eq!(
+            prepared["result"]["state"]["entry"]["plan"]["timeframe"],
+            "5m"
+        );
+        let mut filled = observed_fill("long", 0.5);
+        filled.settings.timeframes = "5m".into();
+        fresh_exit_frames(&mut filled);
+        filled.frames[1].buy.push(exit_level(105.0));
+        filled.frames[5].buy.push(exit_level(110.0));
+        let position = filled.entry.as_ref().unwrap().position.as_ref().unwrap();
+        assert_eq!(
+            profit_candidate(&filled, position, 100_000_000).unwrap().0,
+            "5m"
+        );
+        assert_eq!(
+            profit_candidate(&filled, position, 100_000_000)
+                .unwrap()
+                .1
+                .price,
+            110.0
+        );
+    }
+
+    #[test]
+    fn five_minute_refresh_requests_one_history_and_can_return_to_all() {
+        let mut state = entry_state();
+        state.settings.timeframes = "5m".into();
+        state.frames.retain(|frame| frame.timeframe == "5m");
+        let selected = state.settings.clone();
+        let raw = json!({"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
+            "action":"inspect","state":state,"settings":selected,"observed_at_ms":100_000_000});
+        let out: Value =
+            serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap();
+        assert_eq!(out["status"], "executed", "{out}");
+        let requests = out["result"]["requests"].as_array().unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r["kind"] == "market.candles.read")
+                .count(),
+            1
+        );
+        assert_eq!(requests[0]["timeframe"], "5m");
+        let quote = json!({"symbol":"BTC-USDT","timeframe":"5m",
+            "candles":[[99_600_000,100.,101.,99.,100.]],
+            "current_price":100.,"current_candle":[99_900_000,100.,101.,99.,100.]});
+        let fresh = invoke("market", out["result"]["state"].clone(), quote);
+        assert_eq!(fresh["status"], "executed", "{fresh}");
+        let mut restored: State = serde_json::from_value(fresh["result"]["state"].clone()).unwrap();
+        assert!(market_is_current(&restored, 100_000_000));
+        restored.settings.timeframes = "all".into();
+        assert!(!market_is_current(&restored, 100_000_000));
+        let mut requests = Vec::new();
+        restored.request_market(&mut requests);
+        assert_eq!(requests.len(), 6);
+    }
+
+    #[test]
+    fn changing_timeframe_scope_preserves_a_managed_other_timeframe_order() {
+        let now = 1_800_000_123_456;
+        let mut state = managed_pending_state(now);
+        state.entry.as_mut().unwrap().plan.timeframe = "30m".into();
+        let line = state
+            .frames
+            .iter()
+            .find(|frame| frame.timeframe == "5m")
+            .unwrap()
+            .sell
+            .clone();
+        state
+            .frames
+            .iter_mut()
+            .find(|frame| frame.timeframe == "30m")
+            .unwrap()
+            .sell = line;
+        let plan = serde_json::to_value(&state.entry.as_ref().unwrap().plan).unwrap();
+        let mut selected = state.settings.clone();
+        selected.timeframes = "5m".into();
+        let raw = json!({"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
+            "action":"inspect","state":state,"settings":selected,"observed_at_ms":now});
+        let out: Value =
+            serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap();
+        assert_eq!(out["status"], "executed", "{out}");
+        assert_eq!(out["result"]["state"]["entry"]["plan"], plan);
+        let refreshed = invoke_at(
+            "refresh_order",
+            out["result"]["state"].clone(),
+            Value::Null,
+            now,
+        );
+        assert_eq!(refreshed["status"], "executed", "{refreshed}");
+        let requests = refreshed["result"]["requests"].as_array().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[0]["kind"], "order.snapshot.read");
+        assert_eq!(requests[0]["plan"], plan);
+        assert_eq!(requests[1]["timeframe"], "30m");
+        assert_eq!(requests[2]["timeframe"], "5m");
+        assert_eq!(refreshed["result"]["state"]["entry"]["plan"], plan);
+        let reopened = invoke_at(
+            "open",
+            refreshed["result"]["state"].clone(),
+            Value::Null,
+            now,
+        );
+        assert_eq!(reopened["result"]["state"], refreshed["result"]["state"]);
+        assert!(reopened["result"]["requests"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
 
     #[test]
     fn previous_swings_import_once_without_changing_strategy_values() {
