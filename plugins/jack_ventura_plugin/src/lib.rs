@@ -61,6 +61,12 @@ impl Default for Settings {
 }
 
 impl Settings {
+    fn preserves_order_settings(&self, selected: &Self) -> bool {
+        let mut retained = self.clone();
+        retained.timeframes = selected.timeframes.clone();
+        &retained == selected
+    }
+
     fn validate(&self) -> Result<(), String> {
         if !matches!(self.timeframes.as_str(), "all" | "5m") {
             return Err("Timeframes must be all or 5m".into());
@@ -1208,14 +1214,12 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
                     settings = state.settings.clone();
                 }
             }
-            let mut retained_settings = state.settings.clone();
-            retained_settings.timeframes = settings.timeframes.clone();
             if state
                 .entry
                 .as_ref()
                 .is_some_and(|e| e.attempted && !e.not_sent())
                 && settings.symbol == state.settings.symbol
-                && settings != retained_settings
+                && !state.settings.preserves_order_settings(&settings)
             {
                 return Err("Reconcile the managed order before changing its settings".into());
             }
@@ -1429,12 +1433,12 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
                 }
                 resume_action = Some("present");
             } else {
-                if input
-                    .settings
-                    .as_ref()
-                    .is_some_and(|s| s != &state.settings)
-                {
-                    return Err("Keep the managed order's settings while refreshing it".into());
+                if let Some(settings) = input.settings {
+                    settings.validate()?;
+                    if !state.settings.preserves_order_settings(&settings) {
+                        return Err("Keep the managed order's settings while refreshing it".into());
+                    }
+                    state.settings = settings;
                 }
                 let entry = state
                     .entry
@@ -2945,7 +2949,7 @@ mod tests {
     }
 
     #[test]
-    fn changing_timeframe_scope_preserves_a_managed_other_timeframe_order() {
+    fn visible_refresh_changes_scope_without_replanning_a_managed_order() {
         let now = 1_800_000_123_456;
         let mut state = managed_pending_state(now);
         state.entry.as_mut().unwrap().plan.timeframe = "30m".into();
@@ -2963,39 +2967,81 @@ mod tests {
             .unwrap()
             .sell = line;
         let plan = serde_json::to_value(&state.entry.as_ref().unwrap().plan).unwrap();
-        let mut selected = state.settings.clone();
-        selected.timeframes = "5m".into();
-        let raw = json!({"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
-            "action":"inspect","state":state,"settings":selected,"observed_at_ms":now});
-        let out: Value =
-            serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap();
-        assert_eq!(out["status"], "executed", "{out}");
-        assert_eq!(out["result"]["state"]["entry"]["plan"], plan);
-        let refreshed = invoke_at(
-            "refresh_order",
-            out["result"]["state"].clone(),
-            Value::Null,
-            now,
-        );
-        assert_eq!(refreshed["status"], "executed", "{refreshed}");
-        let requests = refreshed["result"]["requests"].as_array().unwrap();
-        assert_eq!(requests.len(), 3);
-        assert_eq!(requests[0]["kind"], "order.snapshot.read");
-        assert_eq!(requests[0]["plan"], plan);
-        assert_eq!(requests[1]["timeframe"], "30m");
-        assert_eq!(requests[2]["timeframe"], "5m");
-        assert_eq!(refreshed["result"]["state"]["entry"]["plan"], plan);
-        let reopened = invoke_at(
-            "open",
-            refreshed["result"]["state"].clone(),
-            Value::Null,
-            now,
-        );
-        assert_eq!(reopened["result"]["state"], refreshed["result"]["state"]);
-        assert!(reopened["result"]["requests"]
-            .as_array()
-            .unwrap()
-            .is_empty());
+        let mut saved = serde_json::to_value(&state).unwrap();
+        for scope in ["5m", "all", "5m"] {
+            let view = view_for_execution(&state, now, false, true);
+            assert!(view["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a["id"] == "refresh_order"));
+            let mut selected = state.settings.clone();
+            selected.timeframes = scope.into();
+            let raw = json!({"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
+                "action":"refresh_order","state":saved,"settings":selected,"observed_at_ms":now});
+            let out: Value =
+                serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap();
+            assert_eq!(out["status"], "executed", "{out}");
+            assert_eq!(out["result"]["state"]["entry"]["plan"], plan);
+            assert_eq!(
+                out["result"]["state"]["settings"]
+                    .get("timeframes")
+                    .and_then(Value::as_str)
+                    .unwrap_or("all"),
+                scope
+            );
+            let requests = out["result"]["requests"].as_array().unwrap();
+            assert_eq!(requests.len(), if scope == "5m" { 3 } else { 7 });
+            assert_eq!(requests[0]["kind"], "order.snapshot.read");
+            assert_eq!(requests[0]["plan"], plan);
+            assert!(requests[1..]
+                .iter()
+                .all(|r| r["kind"] == "market.candles.read"));
+            if scope == "5m" {
+                assert_eq!(requests[1]["timeframe"], "30m");
+                assert_eq!(requests[2]["timeframe"], "5m");
+            }
+            saved = out["result"]["state"].clone();
+            let reopened = invoke_at("open", saved.clone(), Value::Null, now);
+            assert_eq!(reopened["result"]["state"], saved);
+            assert!(reopened["result"]["requests"]
+                .as_array()
+                .unwrap()
+                .is_empty());
+            state = serde_json::from_value(saved.clone()).unwrap();
+        }
+    }
+
+    #[test]
+    fn scope_refresh_rejects_changes_to_managed_order_parameters() {
+        let now = 1_800_000_123_456;
+        let state = managed_pending_state(now);
+        for action in ["inspect", "refresh_order"] {
+            for field in [
+                "entry_margin",
+                "stop_percent",
+                "detection_length",
+                "margin",
+                "timeframes",
+            ] {
+                let mut selected = serde_json::to_value(&state.settings).unwrap();
+                selected["timeframes"] = json!("5m");
+                selected[field] = match field {
+                    "entry_margin" => json!(2.0),
+                    "stop_percent" => json!(10.0),
+                    "detection_length" => json!(5),
+                    "margin" => json!(5.0),
+                    _ => json!("1m"),
+                };
+                let raw = json!({"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
+                    "action":action,"state":state,"settings":selected,"observed_at_ms":now});
+                let out: Value =
+                    serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap()))
+                        .unwrap();
+                assert_eq!(out["status"], "rejected", "{action}/{field}: {out}");
+                assert!(out.get("result").is_none_or(Value::is_null));
+            }
+        }
     }
 
     #[test]
