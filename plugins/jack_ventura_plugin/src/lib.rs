@@ -10,6 +10,11 @@ const TIMEFRAMES: [(&str, i64); 6] = [
     ("15m", 900_000),
     ("5m", 300_000),
 ];
+
+fn supported_timeframes() -> impl Iterator<Item = (&'static str, i64)> {
+    TIMEFRAMES.into_iter().chain([("1m", 60_000)])
+}
+
 const INPUT_LIMIT: usize = 64 * 1024;
 const ENTRY_HISTORY_WINDOW: i64 = 48 * 60 * 60 * 1000;
 
@@ -61,6 +66,14 @@ impl Default for Settings {
 }
 
 impl Settings {
+    fn includes_timeframe(&self, timeframe: &str) -> bool {
+        if self.timeframes == "all" {
+            TIMEFRAMES.iter().any(|(tf, _)| *tf == timeframe)
+        } else {
+            self.timeframes == timeframe
+        }
+    }
+
     fn preserves_order_settings(&self, selected: &Self) -> bool {
         let mut retained = self.clone();
         retained.timeframes = selected.timeframes.clone();
@@ -68,8 +81,8 @@ impl Settings {
     }
 
     fn validate(&self) -> Result<(), String> {
-        if !matches!(self.timeframes.as_str(), "all" | "5m") {
-            return Err("Timeframes must be all or 5m".into());
+        if !matches!(self.timeframes.as_str(), "all" | "5m" | "1m") {
+            return Err("Timeframes must be all, 5m or 1m".into());
         }
         let parts: Vec<_> = self.symbol.split('-').collect();
         if self.symbol.len() > 64
@@ -527,9 +540,8 @@ impl State {
     }
 
     fn required_timeframes(&self) -> impl Iterator<Item = (&'static str, i64)> + '_ {
-        TIMEFRAMES.into_iter().filter(|(tf, _)| {
-            self.settings.timeframes == "all"
-                || *tf == "5m"
+        supported_timeframes().filter(|(tf, _)| {
+            self.settings.includes_timeframe(tf)
                 || self
                     .entry
                     .as_ref()
@@ -580,7 +592,10 @@ impl State {
                 return Err("Managed entry belongs to another account or instrument".into());
             }
         }
-        if self.version != 1 || self.frames.len() > 6 || self.retired_before_ms < 0 {
+        if self.version != 1
+            || self.frames.len() > TIMEFRAMES.len() + 1
+            || self.retired_before_ms < 0
+        {
             return Err("Unsupported plugin state".into());
         }
         if self.parked.len() > 4 {
@@ -666,10 +681,9 @@ impl State {
 }
 
 fn duration(timeframe: &str) -> Result<i64, String> {
-    TIMEFRAMES
-        .iter()
+    supported_timeframes()
         .find(|(tf, _)| *tf == timeframe)
-        .map(|(_, d)| *d)
+        .map(|(_, d)| d)
         .ok_or_else(|| "Unsupported timeframe".into())
 }
 
@@ -1492,9 +1506,10 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
                 let quote: Snapshot =
                     serde_json::from_str(snapshot.get()).map_err(|_| "Invalid final quote")?;
                 let p = &entry.plan;
+                let validation_frame = if p.timeframe == "1m" { "1m" } else { "5m" };
                 let direction = if p.side == "short" { 1 } else { -1 };
                 if quote.symbol != p.symbol
-                    || quote.timeframe != "5m"
+                    || quote.timeframe != validation_frame
                     || observed < p.prepared_at_ms
                     || observed > p.expires_at_ms
                     || !quote.current_price.is_finite()
@@ -1510,7 +1525,7 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
                 {
                     return Err("Entry expired or price entered its zone; no order sent".into());
                 }
-                let span = duration("5m")?;
+                let span = duration(validation_frame)?;
                 let current_open = observed - observed % span;
                 let prepared_open = p.prepared_at_ms - p.prepared_at_ms % span;
                 let start = quote.history_start_ms.ok_or("Missing history start")?;
@@ -1558,7 +1573,9 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
                 }
             } else {
                 requests.push(json!({"kind":"market.candles.read", "provider":"bingx",
-                    "symbol":entry.plan.symbol, "timeframe":"5m", "limit":600}));
+                    "symbol":entry.plan.symbol,
+                    "timeframe":if entry.plan.timeframe == "1m" { "1m" } else { "5m" },
+                    "limit":600}));
             }
         }
         "restore_entry" => {
@@ -1963,7 +1980,10 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
                     }
                 }
             }
-            state.complete = tf == "5m"
+            state.complete = state
+                .required_timeframes()
+                .last()
+                .is_some_and(|(last, _)| tf == last)
                 && state.required_timeframes().all(|(required, _)| {
                     state.frames.iter().any(|frame| frame.timeframe == required)
                 })
@@ -2269,19 +2289,18 @@ fn same_price(a: f64, b: f64) -> bool {
 }
 
 fn available_lines(state: &State) -> impl Iterator<Item = (&str, &str, &Level)> {
-    TIMEFRAMES
-        .iter()
-        .filter(|(tf, _)| state.settings.timeframes == "all" || *tf == "5m")
+    supported_timeframes()
+        .filter(|(tf, _)| state.settings.includes_timeframe(tf))
         .flat_map(|(tf, _)| {
             state
                 .frames
                 .iter()
-                .filter(move |f| f.timeframe == *tf)
+                .filter(move |f| f.timeframe == tf)
                 .flat_map(move |f| {
                     f.buy
                         .iter()
-                        .map(move |l| (*tf, "short", l))
-                        .chain(f.sell.iter().map(move |l| (*tf, "long", l)))
+                        .map(move |l| (tf, "short", l))
+                        .chain(f.sell.iter().map(move |l| (tf, "long", l)))
                 })
         })
         .filter(|(_, _, l)| l.zone_checked && !l.touched && !l.consumed)
@@ -2732,10 +2751,10 @@ fn view_for_execution(state: &State, now: i64, autonomous: bool, render_lines: b
                 } else {
                     "Single-entry workspace; new cycles are not enabled."
                 },
-                if state.settings.timeframes == "5m" {
-                    " New entries and profit targets use 5m only. An existing order keeps its original plan."
-                } else {
-                    ""
+                match state.settings.timeframes.as_str() {
+                    "5m" => " New entries and profit targets use 5m only. An existing order keeps its original plan.",
+                    "1m" => " New entries and profit targets use 1m only. An existing order keeps its original plan.",
+                    _ => "",
                 },
             )
         })
@@ -2789,7 +2808,7 @@ fn view_for_execution(state: &State, now: i64, autonomous: bool, render_lines: b
                 "source":{"kind":"market.instruments.read", "provider":"bingx"}},
             {"id":"entry_margin", "label":"Margin per entry (USDT, before leverage)", "type":"number", "value":state.settings.entry_margin},
             {"id":"stop_percent", "label":"Stop loss (% of entry margin)", "type":"number", "value":state.settings.stop_percent},
-            {"id":"timeframes", "label":"Timeframes (all or 5m)", "type":"text", "value":state.settings.timeframes, "advanced":true},
+            {"id":"timeframes", "label":"Timeframes (all, 5m or 1m)", "type":"text", "value":state.settings.timeframes, "advanced":true},
             {"id":"detection_length", "label":"Detection length", "type":"integer", "value":state.settings.detection_length, "advanced":true},
             {"id":"margin", "label":"Cluster margin", "type":"number", "value":state.settings.margin, "advanced":true}
         ],
@@ -2877,8 +2896,153 @@ mod tests {
         assert_eq!(restored.timeframes, "all");
         assert_eq!(serde_json::to_value(restored).unwrap(), old);
         let mut invalid = settings();
-        invalid.timeframes = "1m".into();
+        invalid.timeframes = "2m".into();
         assert!(invalid.validate().is_err());
+    }
+
+    fn add_minute_frame(state: &mut State, now: i64) {
+        let mut minute = state
+            .frames
+            .iter()
+            .find(|f| f.timeframe == "5m")
+            .unwrap()
+            .clone();
+        minute.timeframe = "1m".into();
+        let closed = now - now % 60_000 - 60_000;
+        minute.last_open = Some(closed);
+        minute.bars = vec![Candle(closed, 100., 101., 99., 100.)];
+        state.frames.push(minute);
+    }
+
+    #[test]
+    fn minute_scope_selects_entries_and_profit_targets_and_survives_reopen() {
+        let mut state = entry_state();
+        add_minute_frame(&mut state, 100_000_000);
+        state.settings.timeframes = "1m".into();
+        state.validate().unwrap();
+        assert_eq!(candidate(&state).unwrap().0, "1m");
+        let prepared = invoke("prepare", serde_json::to_value(state).unwrap(), Value::Null);
+        assert_eq!(prepared["status"], "executed", "{prepared}");
+        assert_eq!(
+            prepared["result"]["state"]["entry"]["plan"]["timeframe"],
+            "1m"
+        );
+        assert!(prepared["result"]["view"]["summary"]
+            .as_str()
+            .unwrap()
+            .contains("1m only"));
+        let saved = prepared["result"]["state"].clone();
+        assert_eq!(
+            invoke("present", saved.clone(), Value::Null)["result"]["state"],
+            saved
+        );
+
+        let mut filled = observed_fill("long", 0.5);
+        fresh_exit_frames(&mut filled);
+        filled.frames[5].buy.push(exit_level(105.));
+        add_minute_frame(&mut filled, 100_000_000);
+        filled.frames.last_mut().unwrap().buy = vec![exit_level(110.)];
+        filled.settings.timeframes = "1m".into();
+        let position = filled.entry.as_ref().unwrap().position.as_ref().unwrap();
+        let target = profit_candidate(&filled, position, 100_000_000).unwrap();
+        assert_eq!(target.0, "1m");
+        assert_eq!(target.1.price, 110.);
+    }
+
+    #[test]
+    fn minute_refresh_completes_and_all_still_requests_the_original_six_frames() {
+        let mut state = entry_state();
+        add_minute_frame(&mut state, 100_000_000);
+        state.settings.timeframes = "1m".into();
+        let selected = state.settings.clone();
+        let raw = json!({"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
+            "action":"inspect","state":state,"settings":selected,"observed_at_ms":100_000_000});
+        let out: Value =
+            serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap();
+        assert_eq!(out["status"], "executed", "{out}");
+        let reads: Vec<_> = out["result"]["requests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["kind"] == "market.candles.read")
+            .cloned()
+            .collect();
+        assert_eq!(
+            reads,
+            vec![
+                json!({"kind":"market.candles.read", "provider":"bingx", "symbol":"BTC-USDT", "timeframe":"1m", "limit":600})
+            ]
+        );
+        let quote = json!({"symbol":"BTC-USDT", "timeframe":"1m",
+            "candles":[[99_900_000,100.,101.,99.,100.]],
+            "current_price":100., "current_candle":[99_960_000,100.,101.,99.,100.]});
+        let fresh = invoke("market", out["result"]["state"].clone(), quote);
+        assert_eq!(fresh["status"], "executed", "{fresh}");
+        let mut restored: State = serde_json::from_value(fresh["result"]["state"].clone()).unwrap();
+        assert!(market_is_current(&restored, 100_000_000));
+        restored.settings.timeframes = "all".into();
+        let mut requests = Vec::new();
+        restored.request_market(&mut requests);
+        assert_eq!(requests.len(), 6);
+        assert!(requests.iter().all(|r| r["timeframe"] != "1m"));
+    }
+
+    #[test]
+    fn minute_entry_delivery_validates_minute_history_and_rejects_a_touch() {
+        let mut state = entry_state();
+        add_minute_frame(&mut state, 100_000_000);
+        state.settings.timeframes = "1m".into();
+        let prepared = invoke("prepare", serde_json::to_value(state).unwrap(), Value::Null);
+        let placed = invoke(
+            "place_entry",
+            prepared["result"]["state"].clone(),
+            Value::Null,
+        );
+        assert_eq!(placed["status"], "executed", "{placed}");
+        let state = placed["result"]["state"].clone();
+        let requested = invoke("validate_entry", state.clone(), Value::Null);
+        assert_eq!(requested["result"]["requests"][0]["timeframe"], "1m");
+        let quote = json!({"symbol":"BTC-USDT", "timeframe":"1m",
+            "candles":[[99_900_000,100.,101.,99.,100.]], "current_price":100.,
+            "current_candle":[99_960_000,100.,101.,99.,100.], "history_start_ms":99_900_000,
+            "history_end_ms":99_900_000, "batch_complete":true});
+        let good = invoke("validate_entry", state.clone(), quote.clone());
+        assert_eq!(good["status"], "executed", "{good}");
+        let mut wrong = quote.clone();
+        wrong["timeframe"] = json!("5m");
+        assert_eq!(
+            invoke("validate_entry", state.clone(), wrong)["status"],
+            "rejected"
+        );
+        let mut touched = quote;
+        touched["current_candle"][3] = json!(97.);
+        assert_eq!(
+            invoke("validate_entry", state, touched)["status"],
+            "rejected"
+        );
+    }
+
+    #[test]
+    fn returning_to_all_preserves_a_minute_order_and_requests_its_original_frame() {
+        let mut state = managed_pending_state(100_000_000);
+        add_minute_frame(&mut state, 100_000_000);
+        state.entry.as_mut().unwrap().plan.timeframe = "1m".into();
+        state.settings.timeframes = "1m".into();
+        let plan = serde_json::to_value(&state.entry.as_ref().unwrap().plan).unwrap();
+        let mut selected = state.settings.clone();
+        selected.timeframes = "all".into();
+        let raw = json!({"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
+            "action":"refresh_order","state":state,"settings":selected,"observed_at_ms":100_000_000});
+        let out: Value =
+            serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap();
+        assert_eq!(out["status"], "executed", "{out}");
+        assert_eq!(out["result"]["state"]["entry"]["plan"], plan);
+        let requests = out["result"]["requests"].as_array().unwrap();
+        assert_eq!(requests.len(), 8);
+        assert_eq!(requests.last().unwrap()["timeframe"], "1m");
+        let reopened = invoke("present", out["result"]["state"].clone(), Value::Null);
+        assert_eq!(reopened["status"], "executed", "{reopened}");
+        assert_eq!(reopened["result"]["state"]["entry"]["plan"], plan);
     }
 
     #[test]
@@ -2968,7 +3132,7 @@ mod tests {
             .sell = line;
         let plan = serde_json::to_value(&state.entry.as_ref().unwrap().plan).unwrap();
         let mut saved = serde_json::to_value(&state).unwrap();
-        for scope in ["5m", "all", "5m"] {
+        for scope in ["5m", "1m", "all", "5m"] {
             let view = view_for_execution(&state, now, false, true);
             assert!(view["actions"]
                 .as_array()
@@ -2991,15 +3155,15 @@ mod tests {
                 scope
             );
             let requests = out["result"]["requests"].as_array().unwrap();
-            assert_eq!(requests.len(), if scope == "5m" { 3 } else { 7 });
+            assert_eq!(requests.len(), if scope != "all" { 3 } else { 7 });
             assert_eq!(requests[0]["kind"], "order.snapshot.read");
             assert_eq!(requests[0]["plan"], plan);
             assert!(requests[1..]
                 .iter()
                 .all(|r| r["kind"] == "market.candles.read"));
-            if scope == "5m" {
+            if scope != "all" {
                 assert_eq!(requests[1]["timeframe"], "30m");
-                assert_eq!(requests[2]["timeframe"], "5m");
+                assert_eq!(requests[2]["timeframe"], scope);
             }
             saved = out["result"]["state"].clone();
             let reopened = invoke_at("open", saved.clone(), Value::Null, now);
@@ -3031,7 +3195,7 @@ mod tests {
                     "stop_percent" => json!(10.0),
                     "detection_length" => json!(5),
                     "margin" => json!(5.0),
-                    _ => json!("1m"),
+                    _ => json!("2m"),
                 };
                 let raw = json!({"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
                     "action":action,"state":state,"settings":selected,"observed_at_ms":now});

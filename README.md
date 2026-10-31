@@ -101,10 +101,10 @@ publishing assets.
   levels live in WASM state. It requests public candles and normalized
   read-only account evidence through `plugin_workspace_v1`, and computes
   quantity and stop previews from margin and existing directional leverage.
-  Advanced `Timeframes (all or 5m)` accepts `all` (the existing six-frame
-  policy) or `5m` for five-minute entries and new profit targets. Returning
+  Advanced `Timeframes (all, 5m or 1m)` accepts `all` (the existing six-frame
+  policy), `5m` or `1m` for entries and new profit targets on that frame. Returning
   to `all` restores the original policy without replacing the package.
-  Five-minute mode requests one candle history; while a previously managed
+  Either single-frame mode requests one candle history; while a previously managed
   order belongs to another timeframe, it also refreshes that original frame
   without cancelling or rewriting the order. Other trade settings remain
   fixed while an order is managed. Saved settings without this field retain

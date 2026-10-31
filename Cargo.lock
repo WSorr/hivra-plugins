@@ -67,7 +67,7 @@ dependencies = [
 
 [[package]]
 name = "hivra_jack_ventura_plugin"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "serde",
  "serde_json",
