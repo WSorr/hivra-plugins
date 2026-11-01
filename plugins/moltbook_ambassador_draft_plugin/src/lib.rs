@@ -120,6 +120,11 @@ fn access() -> Value {
 fn view(w: &Work, message: &str) -> Value {
     let summary = if w.actor.is_empty() {
         "Connect the owner's service token and Analyst AI in plugin permissions.".into()
+    } else if !w.draft.is_null() {
+        format!(
+            "{} · Prepared using fresh service history; no local drafts or journal.",
+            w.actor
+        )
     } else {
         format!("{} · observed {} recent posts, {} recent comments, {} conversation comments. Service history is read afresh; no local drafts or journal.",w.actor,w.posts.len(),w.own_comments.len(),w.comments.len())
     };
