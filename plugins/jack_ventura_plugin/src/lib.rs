@@ -1,3 +1,4 @@
+mod service;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, value::RawValue, Value};
 
@@ -555,10 +556,6 @@ impl State {
                 requests.push(json!({"kind":"account.snapshot.read", "provider":"bingx",
                     "symbol":self.settings.symbol, "account_id":account.account_id}));
                 return;
-            }
-            if !self.entry.as_ref().is_some_and(|e| e.attempted) {
-                requests.push(json!({"kind":"order.snapshot.read", "scope":"durable",
-                    "provider":"bingx", "account_id":account.account_id}));
             }
         }
     }
@@ -1174,6 +1171,7 @@ struct OpenOrdersView {
     details: String,
 }
 
+#[cfg(test)]
 #[derive(Serialize)]
 struct Envelope<'a> {
     schema_version: u32,
@@ -1184,6 +1182,17 @@ struct Envelope<'a> {
 }
 
 fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
+    if matches!(input.action.as_str(), "list_orders" | "open_orders") {
+        return observe_orders(input);
+    }
+    let state = match input.state {
+        Some(raw) => serde_json::from_str::<State>(raw.get()).map_err(|e| e.to_string())?,
+        None => State::new(Settings::default()),
+    };
+    evaluate_state(input, state)
+}
+
+fn evaluate_state(input: Input<'_>, mut state: State) -> Result<Output<'_>, String> {
     if input.schema_version != 1 || input.plugin_id != PLUGIN_ID || input.host_method != "workspace"
     {
         return Err("Unsupported invocation".into());
@@ -1192,13 +1201,6 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
     if observed <= 0 {
         return Err("Invalid observation time".into());
     }
-    if matches!(input.action.as_str(), "list_orders" | "open_orders") {
-        return observe_orders(input);
-    }
-    let mut state = match input.state {
-        Some(raw) => serde_json::from_str::<State>(raw.get()).map_err(|e| e.to_string())?,
-        None => State::new(Settings::default()),
-    };
     state.validate()?;
     let mut requests = Vec::new();
     let mut resume_action = None;
@@ -1578,95 +1580,6 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
                     "limit":600}));
             }
         }
-        "restore_entry" => {
-            let history: Value =
-                serde_json::from_str(input.snapshot.ok_or("Missing durable history")?.get())
-                    .map_err(|_| "Invalid durable history")?;
-            let account = &state
-                .account
-                .as_ref()
-                .ok_or("Connect the account before recovery")?
-                .account_id;
-            if history["account_id"].as_str() != Some(account.as_str())
-                || history["batch_complete"].as_bool().is_none()
-            {
-                return Err("Durable history belongs to another account or is incomplete".into());
-            }
-            let operations = history["operations"]
-                .as_array()
-                .filter(|ops| ops.len() <= 4)
-                .ok_or("Invalid durable history batch")?;
-            for operation in operations {
-                if operation["account_binding_id"].as_str() != Some(account.as_str())
-                    || operation["provider_id"] != "bingx"
-                {
-                    return Err("Durable operation belongs to another account or provider".into());
-                }
-                if operation["effect_kind"] == "position.exit.place" {
-                    if operation["state"] == "terminal_failure"
-                        && matches!(
-                            operation["last_error_code"].as_str(),
-                            Some("exit_not_sent" | "provider_rejected")
-                        )
-                    {
-                        continue;
-                    }
-                    let plan: ExitPlan = serde_json::from_str(
-                        operation["canonical_payload_json"]
-                            .as_str()
-                            .ok_or("Missing durable exit payload")?,
-                    )
-                    .map_err(|_| "Invalid durable exit")?;
-                    if let Some(entry) = state.entry.as_mut().filter(|e| e.plan == plan.entry_plan)
-                    {
-                        entry.observed_position_id = Some(plan.position_id.clone());
-                        entry.profit_exit = Some(ManagedExit {
-                            plan,
-                            attempted: true,
-                            evidence: None,
-                        });
-                    }
-                    continue;
-                }
-                if operation["effect_kind"] != "order.entry.place"
-                    || (operation["state"] == "terminal_failure"
-                        && matches!(
-                            operation["last_error_code"].as_str(),
-                            Some("entry_not_sent" | "provider_rejected")
-                        )
-                        && operation["receipt"].is_null())
-                {
-                    continue;
-                }
-                let plan: EntryPlan = serde_json::from_str(
-                    operation["canonical_payload_json"]
-                        .as_str()
-                        .ok_or("Missing durable entry payload")?,
-                )
-                .map_err(|_| "Invalid durable entry")?;
-                if plan.account_id != *account {
-                    return Err("Durable entry belongs to another account".into());
-                }
-                if plan.prepared_at_ms <= state.retired_before_ms {
-                    continue;
-                }
-                if state.settings.symbol != plan.symbol {
-                    continue;
-                }
-                state.entry = Some(ManagedEntry {
-                    plan,
-                    attempted: true,
-                    evidence: None,
-                    validation: None,
-                    observed_position_id: None,
-                    lifecycle_observed_at_ms: None,
-                    flat_observed_at_ms: None,
-                    position: None,
-                    profit_exit: None,
-                });
-            }
-            state.validate()?;
-        }
         "order" => {
             let evidence: OrderEvidence =
                 serde_json::from_str(input.snapshot.ok_or("Missing order evidence")?.get())
@@ -1738,7 +1651,18 @@ fn evaluate(input: Input<'_>) -> Result<Output<'_>, String> {
                 evidence.status.as_str(),
                 "filled" | "cancelled" | "rejected" | "expired"
             );
-            let flat = terminal && snapshot.positions.is_empty() && snapshot.orders.is_empty();
+            let managed_order_open = snapshot.orders.iter().any(|order| {
+                evidence.order_id.as_deref() == Some(order.order_id.as_str())
+                    || entry
+                        .profit_exit
+                        .as_ref()
+                        .and_then(|exit| exit.evidence.as_ref())
+                        .and_then(|exit| exit.order_id.as_deref())
+                        == Some(order.order_id.as_str())
+            });
+            // An account observation does not make the owner's other orders
+            // part of this plan. Preserve exact entry/exit and position checks.
+            let flat = terminal && snapshot.positions.is_empty() && !managed_order_open;
             // If a stop or manual close happened between polls, one flat read
             // alone can race the fill. Require a second fresh flat snapshot
             // before rearming. A position observed by this lifecycle has
@@ -2820,7 +2744,8 @@ fn view_for_execution(state: &State, now: i64, autonomous: bool, render_lines: b
             state.observed_at.map(|t| age(now, t)).unwrap_or_else(|| "not yet".into()))})
 }
 
-pub fn evaluate_json(raw: &[u8]) -> Vec<u8> {
+#[cfg(test)]
+fn evaluate_engine_json(raw: &[u8]) -> Vec<u8> {
     let result = if raw.len() > INPUT_LIMIT {
         Err("Input exceeds the bounded ABI".into())
     } else {
@@ -2845,6 +2770,10 @@ pub fn evaluate_json(raw: &[u8]) -> Vec<u8> {
         },
     };
     serde_json::to_vec(&envelope).unwrap_or_default()
+}
+
+pub fn evaluate_json(raw: &[u8]) -> Vec<u8> {
+    service::evaluate_json(raw)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -2958,7 +2887,8 @@ mod tests {
         let raw = json!({"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
             "action":"inspect","state":state,"settings":selected,"observed_at_ms":100_000_000});
         let out: Value =
-            serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap();
+            serde_json::from_slice(&evaluate_engine_json(&serde_json::to_vec(&raw).unwrap()))
+                .unwrap();
         assert_eq!(out["status"], "executed", "{out}");
         let reads: Vec<_> = out["result"]["requests"]
             .as_array()
@@ -3034,7 +2964,8 @@ mod tests {
         let raw = json!({"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
             "action":"refresh_order","state":state,"settings":selected,"observed_at_ms":100_000_000});
         let out: Value =
-            serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap();
+            serde_json::from_slice(&evaluate_engine_json(&serde_json::to_vec(&raw).unwrap()))
+                .unwrap();
         assert_eq!(out["status"], "executed", "{out}");
         assert_eq!(out["result"]["state"]["entry"]["plan"], plan);
         let requests = out["result"]["requests"].as_array().unwrap();
@@ -3087,7 +3018,8 @@ mod tests {
         let raw = json!({"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
             "action":"inspect","state":state,"settings":selected,"observed_at_ms":100_000_000});
         let out: Value =
-            serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap();
+            serde_json::from_slice(&evaluate_engine_json(&serde_json::to_vec(&raw).unwrap()))
+                .unwrap();
         assert_eq!(out["status"], "executed", "{out}");
         let requests = out["result"]["requests"].as_array().unwrap();
         assert_eq!(
@@ -3144,7 +3076,8 @@ mod tests {
             let raw = json!({"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
                 "action":"refresh_order","state":saved,"settings":selected,"observed_at_ms":now});
             let out: Value =
-                serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap();
+                serde_json::from_slice(&evaluate_engine_json(&serde_json::to_vec(&raw).unwrap()))
+                    .unwrap();
             assert_eq!(out["status"], "executed", "{out}");
             assert_eq!(out["result"]["state"]["entry"]["plan"], plan);
             assert_eq!(
@@ -3199,9 +3132,10 @@ mod tests {
                 };
                 let raw = json!({"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
                     "action":action,"state":state,"settings":selected,"observed_at_ms":now});
-                let out: Value =
-                    serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap()))
-                        .unwrap();
+                let out: Value = serde_json::from_slice(&evaluate_engine_json(
+                    &serde_json::to_vec(&raw).unwrap(),
+                ))
+                .unwrap();
                 assert_eq!(out["status"], "rejected", "{action}/{field}: {out}");
                 assert!(out.get("result").is_none_or(Value::is_null));
             }
@@ -3227,49 +3161,6 @@ mod tests {
         ] {
             assert!(serde_json::from_value::<Swing>(invalid).is_err());
         }
-    }
-
-    #[test]
-    fn lost_state_recovers_exact_exit_from_durable_history_without_effects() {
-        let mut state = observed_fill("long", 0.5);
-        fresh_exit_frames(&mut state);
-        state.frames[1].buy.push(exit_level(105.0));
-        let ready = invoke(
-            "exit_ready",
-            serde_json::to_value(state).unwrap(),
-            Value::Null,
-        );
-        let saved = ready["result"]["state"].clone();
-        let entry_plan = saved["entry"]["plan"].clone();
-        let exit_plan = saved["entry"]["profit_exit"]["plan"].clone();
-        let mut lost = saved.clone();
-        lost["entry"] = Value::Null;
-        let operations = json!([
-            {"account_binding_id":"a".repeat(64),"provider_id":"bingx", "effect_kind":"order.entry.place",
-                "state":"succeeded","canonical_payload_json":entry_plan.to_string()},
-            {"account_binding_id":"a".repeat(64),"provider_id":"bingx", "effect_kind":"position.exit.place",
-                "state":"unresolved","canonical_payload_json":exit_plan.to_string()},
-        ]);
-        let recovered = invoke(
-            "restore_entry",
-            lost,
-            json!({"account_id":"a".repeat(64),
-            "operations":operations,"batch_complete":true}),
-        );
-        assert_eq!(recovered["status"], "executed", "{recovered}");
-        assert_eq!(
-            recovered["result"]["state"]["entry"]["profit_exit"]["plan"],
-            exit_plan
-        );
-        assert_eq!(
-            recovered["result"]["state"]["entry"]["profit_exit"]["attempted"],
-            true
-        );
-        assert!(recovered["result"]["requests"]
-            .as_array()
-            .unwrap()
-            .is_empty());
-        assert!(recovered["result"]["view"]["confirmation"].is_null());
     }
 
     #[test]
@@ -3442,7 +3333,10 @@ mod tests {
             "order_id":"999", "status":"open", "filled_quantity":0.0,"average_price":0.0,"observed_at_ms":100_000_001});
         let observed = invoke_at("exit", saved.clone(), evidence.clone(), 100_000_001);
         assert_eq!(observed["status"], "executed", "{observed}");
-        let mut snapshot = lifecycle_snapshot(&saved, json!([]), json!([]), 100_000_001);
+        let manual = json!([{"order_id":"789", "side":"BUY", "position_side":"LONG",
+            "type":"TRIGGER_LIMIT", "status":"NEW", "price":"90", "stop_price":"91",
+            "quantity":"2", "filled_quantity":"0"}]);
+        let mut snapshot = lifecycle_snapshot(&saved, json!([]), manual.clone(), 100_000_001);
         assert_eq!(
             invoke_at("lifecycle", saved.clone(), snapshot.clone(), 100_000_001)["status"],
             "rejected"
@@ -3455,6 +3349,12 @@ mod tests {
         evidence["filled_quantity"] = json!(qty);
         evidence["average_price"] = json!(105.0);
         snapshot["exit"] = evidence;
+        snapshot["orders"] = json!([{"order_id":"999", "side":"SELL", "position_side":"LONG",
+            "type":"LIMIT", "status":"NEW", "price":"105", "stop_price":"0",
+            "quantity":qty.to_string(), "filled_quantity":"0"}]);
+        let inconsistent = invoke_at("lifecycle", saved.clone(), snapshot.clone(), 100_000_001);
+        assert!(inconsistent["result"]["state"]["entry"].is_object());
+        snapshot["orders"] = manual;
         let plan = saved["entry"]["plan"].clone();
         let closed = invoke_at("lifecycle", saved, snapshot, 100_000_001);
         assert_eq!(closed["status"], "executed", "{closed}");
@@ -3556,7 +3456,7 @@ mod tests {
         state
     }
 
-    fn lifecycle_state(status: &str, filled: f64) -> Value {
+    pub(super) fn lifecycle_state(status: &str, filled: f64) -> Value {
         let prepared = invoke(
             "prepare",
             serde_json::to_value(entry_state()).unwrap(),
@@ -3591,7 +3491,7 @@ mod tests {
             "action":"inspect","state":state,"settings":selected,"observed_at_ms":100_000_001,
             "execution":{"account_id":"a".repeat(64),"symbol":"BTC-USDT",
                 "allow_new_entries":allow_new_entries}});
-        serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap()
+        serde_json::from_slice(&evaluate_engine_json(&serde_json::to_vec(&raw).unwrap())).unwrap()
     }
 
     #[test]
@@ -3605,7 +3505,8 @@ mod tests {
             "execution":{"account_id":"a".repeat(64),"symbol":"BTC-USDT",
                 "allow_new_entries":false}});
         let switched: Value =
-            serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap();
+            serde_json::from_slice(&evaluate_engine_json(&serde_json::to_vec(&raw).unwrap()))
+                .unwrap();
         assert_eq!(switched["status"], "executed", "{switched}");
         assert_eq!(
             switched["result"]["state"]["settings"]["symbol"],
@@ -3642,14 +3543,7 @@ mod tests {
         let returned = select_symbol(reopened["result"]["state"].clone(), "BTC-USDT", false);
         assert_eq!(returned["status"], "executed", "{returned}");
         assert_eq!(returned["result"]["state"]["retired_before_ms"], retired_at);
-        let recovered = invoke(
-            "restore_entry",
-            returned["result"]["state"].clone(),
-            json!({"account_id":"a".repeat(64),"batch_complete":true,
-                "operations":[{"account_binding_id":"a".repeat(64),
-                    "provider_id":"bingx","effect_kind":"order.entry.place",
-                    "state":"succeeded","canonical_payload_json":old_plan.to_string()}]}),
-        );
+        let recovered = invoke("open", returned["result"]["state"].clone(), Value::Null);
         assert_eq!(recovered["status"], "executed", "{recovered}");
         assert!(recovered["result"]["state"]["entry"].is_null());
         assert_eq!(
@@ -3659,7 +3553,7 @@ mod tests {
     }
 
     #[test]
-    fn switching_instruments_preserves_managed_entry_and_ignores_foreign_journal() {
+    fn switching_instruments_preserves_managed_entry_across_restart() {
         let active = lifecycle_state("filled", 1.0);
         assert_eq!(
             select_symbol(active.clone(), "DASH-USDT", true)["status"],
@@ -3694,22 +3588,6 @@ mod tests {
         );
         assert_eq!(connected["status"], "executed", "{connected}");
         let dash = connected["result"]["state"].clone();
-        let old_journal = invoke(
-            "restore_entry",
-            dash.clone(),
-            json!({
-                "account_id":"a".repeat(64), "batch_complete":true,
-                "operations":[{"account_binding_id":"a".repeat(64),"provider_id":"bingx",
-                    "effect_kind":"order.entry.place","state":"succeeded",
-                    "canonical_payload_json":active["entry"]["plan"].to_string()}]
-            }),
-        );
-        assert_eq!(old_journal["status"], "executed", "{old_journal}");
-        assert!(old_journal["result"]["state"]["entry"].is_null());
-        assert_eq!(
-            old_journal["result"]["state"]["settings"]["symbol"],
-            "DASH-USDT"
-        );
         let returned = select_symbol(dash, "BTC-USDT", false);
         assert_eq!(returned["status"], "executed", "{returned}");
         assert_eq!(
@@ -3740,7 +3618,7 @@ mod tests {
             "action":action, "state":state, "observed_at_ms":100_000_001,
             "execution":{"account_id":"a".repeat(64), "symbol":"BTC-USDT", "allow_new_entries":allowed}
         });
-        serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap()
+        serde_json::from_slice(&evaluate_engine_json(&serde_json::to_vec(&raw).unwrap())).unwrap()
     }
 
     #[test]
@@ -3819,7 +3697,8 @@ mod tests {
         let raw = json!({"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
             "action":"start", "state":initial, "settings":settings(), "observed_at_ms":100_000_001});
         let start: Value =
-            serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap();
+            serde_json::from_slice(&evaluate_engine_json(&serde_json::to_vec(&raw).unwrap()))
+                .unwrap();
         assert!(start["result"]["state"]["entry"].is_null());
         assert!(start["result"]["requests"]
             .as_array()
@@ -3893,7 +3772,7 @@ mod tests {
                 lifecycle_snapshot(
                     &reopened,
                     json!([]),
-                    json!([{"order_id":"789", "side":"SELL", "position_side":"LONG", "type":"STOP_MARKET", "status":"NEW", "price":"0", "stop_price":"96", "quantity":"1", "filled_quantity":"0"}]),
+                    json!([{"order_id":"123", "side":"BUY", "position_side":"LONG", "type":"LIMIT", "status":"NEW", "price":"96.5", "stop_price":"0", "quantity":"1", "filled_quantity":"0"}]),
                     100_000_001,
                 ),
                 100_000_001,
@@ -3912,14 +3791,7 @@ mod tests {
             assert_eq!(retired["frames"][0]["sell"][0]["touched"], false);
             assert_eq!(retired["frames"][0]["sell"][0]["consumed"], true);
             assert_eq!(retired["complete"], false);
-            let restored = invoke_at(
-                "restore_entry",
-                retired.clone(),
-                json!({"account_id":"a".repeat(64), "batch_complete":true,
-                "operations":[{"account_binding_id":"a".repeat(64), "provider_id":"bingx", "effect_kind":"order.entry.place", "state":"succeeded",
-                    "canonical_payload_json":serde_json::to_string(&state["entry"]["plan"]).unwrap()}]}),
-                100_000_002,
-            );
+            let restored = invoke_at("open", retired.clone(), Value::Null, 100_000_002);
             assert_eq!(restored["status"], "executed", "{restored}");
             assert!(restored["result"]["state"]["entry"].is_null());
             assert_eq!(
@@ -3954,6 +3826,79 @@ mod tests {
             100_000_001
         );
         assert_eq!(next["result"]["state"]["entry"]["attempted"], false);
+    }
+
+    #[test]
+    fn manual_orders_do_not_own_terminal_entry_retirement_or_restart() {
+        for status in ["cancelled", "rejected", "expired", "filled"] {
+            let filled = if status == "filled" { 1.0 } else { 0.0 };
+            let initial = lifecycle_state(status, filled);
+            let manual = json!([{"order_id":"789", "side":"BUY", "position_side":"LONG",
+                "type":"TRIGGER_LIMIT", "status":"NEW", "price":"90", "stop_price":"91",
+                "quantity":"2", "filled_quantity":"0"}]);
+            let first = invoke(
+                "lifecycle",
+                initial.clone(),
+                lifecycle_snapshot(&initial, json!([]), manual.clone(), 100_000_000),
+            );
+            assert_eq!(first["status"], "executed", "{first}");
+            let waiting = first["result"]["state"].clone();
+            let retired = if filled > 0.0 {
+                assert!(!waiting["entry"].is_null());
+                // An unobserved fill still needs two fresh observations, even
+                // across restart and with unrelated owner orders present.
+                let reopened: Value =
+                    serde_json::from_slice(&serde_json::to_vec(&waiting).unwrap()).unwrap();
+                let second = invoke_at(
+                    "lifecycle",
+                    reopened.clone(),
+                    lifecycle_snapshot(&reopened, json!([]), manual.clone(), 100_000_001),
+                    100_000_001,
+                );
+                assert_eq!(second["status"], "executed", "{second}");
+                second["result"]["state"].clone()
+            } else {
+                waiting
+            };
+            assert!(retired["entry"].is_null(), "{status}");
+            assert_eq!(retired["retired_before_ms"], 100_000_000);
+            assert!(first["result"]["requests"].as_array().unwrap().is_empty());
+            let restored = invoke_at("open", retired, Value::Null, 100_000_002);
+            assert_eq!(restored["status"], "executed", "{restored}");
+            assert!(restored["result"]["state"]["entry"].is_null());
+            assert!(restored["result"]["requests"]
+                .as_array()
+                .unwrap()
+                .is_empty());
+        }
+    }
+
+    #[test]
+    fn unrelated_orders_do_not_release_unknown_partial_or_position_exposure() {
+        let manual = json!([{"order_id":"789", "side":"BUY", "position_side":"LONG",
+            "type":"TRIGGER_LIMIT", "status":"NEW", "price":"90", "stop_price":"91",
+            "quantity":"2", "filled_quantity":"0"}]);
+        for (status, filled) in [
+            ("unknown", 0.0),
+            ("open", 0.0),
+            ("partial", 0.5),
+            ("filled", 1.0),
+        ] {
+            let state = lifecycle_state(status, filled);
+            let positions = if filled > 0.0 {
+                json!([{"position_id":"456", "side":"long", "quantity":state["entry"]["evidence"]["filled_quantity"], "average_price":96.5}])
+            } else {
+                json!([])
+            };
+            let result = invoke(
+                "lifecycle",
+                state.clone(),
+                lifecycle_snapshot(&state, positions, manual.clone(), 100_000_000),
+            );
+            assert_eq!(result["status"], "executed", "{result}");
+            assert!(!result["result"]["state"]["entry"].is_null());
+            assert!(result["result"]["requests"].as_array().unwrap().is_empty());
+        }
     }
 
     #[test]
@@ -4584,7 +4529,8 @@ mod tests {
             "action":"refresh_order", "observed_at_ms":now, "state":state});
         raw["settings"] = json!(settings());
         let changed: Value =
-            serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap();
+            serde_json::from_slice(&evaluate_engine_json(&serde_json::to_vec(&raw).unwrap()))
+                .unwrap();
         assert_eq!(changed["status"], "rejected");
     }
 
@@ -4733,7 +4679,8 @@ mod tests {
             let raw = json!({"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
                 "action":"prepare_entry","settings":settings(),"state":state,"observed_at_ms":100_000_001});
             let refreshed: Value =
-                serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap();
+                serde_json::from_slice(&evaluate_engine_json(&serde_json::to_vec(&raw).unwrap()))
+                    .unwrap();
             if status != "not_sent" {
                 assert!(
                     refreshed["result"]["state"]["entry"]["attempted"] == true
@@ -4812,7 +4759,8 @@ mod tests {
         let call = |action: &str, state: Value, snapshot: Value| -> Value {
             let raw = json!({"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
                 "action":action,"state":state,"snapshot":snapshot,"observed_at_ms":now});
-            serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap()
+            serde_json::from_slice(&evaluate_engine_json(&serde_json::to_vec(&raw).unwrap()))
+                .unwrap()
         };
         let placed = call(
             "place_entry",
@@ -4909,7 +4857,8 @@ mod tests {
         let raw = json!({"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
             "action":"place_entry","state":prepared["result"]["state"],"observed_at_ms":100_000_001 + ENTRY_HISTORY_WINDOW});
         let out: Value =
-            serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap();
+            serde_json::from_slice(&evaluate_engine_json(&serde_json::to_vec(&raw).unwrap()))
+                .unwrap();
         assert_eq!(out["status"], "rejected");
         let mut raw = raw;
         raw["observed_at_ms"] = json!(100_000_000);
@@ -4917,7 +4866,8 @@ mod tests {
         settings.entry_margin = 2.0;
         raw["settings"] = serde_json::to_value(settings).unwrap();
         let out: Value =
-            serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap();
+            serde_json::from_slice(&evaluate_engine_json(&serde_json::to_vec(&raw).unwrap()))
+                .unwrap();
         assert_eq!(out["status"], "rejected");
     }
 
@@ -5204,86 +5154,6 @@ mod tests {
         evidence["filled_quantity"] = json!(0.1);
         evidence["account_id"] = json!("b".repeat(64));
         assert_eq!(invoke("order", state, evidence)["status"], "rejected");
-        let restored = invoke(
-            "restore_entry",
-            serde_json::to_value(entry_state()).unwrap(),
-            json!({"account_id":"a".repeat(64), "batch_complete":true, "operations":[{
-                "account_binding_id":"a".repeat(64), "provider_id":"bingx", "effect_kind":"order.entry.place",
-                "state":"succeeded", "canonical_payload_json":serde_json::to_string(&prepared["result"]["state"]["entry"]["plan"]).unwrap()
-            }]}),
-        );
-        assert_eq!(restored["result"]["state"]["entry"]["attempted"], true);
-        assert!(restored["result"]["requests"]
-            .as_array()
-            .unwrap()
-            .is_empty());
-    }
-
-    #[test]
-    fn recovery_selects_durable_entries_across_batches_without_inventing_observations() {
-        let prepared = invoke(
-            "prepare",
-            serde_json::to_value(entry_state()).unwrap(),
-            Value::Null,
-        );
-        let plan = prepared["result"]["state"]["entry"]["plan"].clone();
-        let mut state = serde_json::to_value(entry_state()).unwrap();
-        let opened = invoke("open", state.clone(), Value::Null);
-        assert_eq!(opened["result"]["requests"][0]["scope"], "durable");
-        let operation = json!({
-            "account_binding_id":"a".repeat(64), "provider_id":"bingx",
-            "effect_kind":"order.entry.place", "state":"succeeded",
-            "canonical_payload_json":serde_json::to_string(&plan).unwrap(),
-            "receipt":{"provider_receipt_id":"123"}
-        });
-        for complete in [false, true] {
-            let mut not_sent = operation.clone();
-            not_sent["state"] = json!("terminal_failure");
-            not_sent["last_error_code"] = json!("entry_not_sent");
-            not_sent["receipt"] = Value::Null;
-            not_sent["canonical_payload_json"] = json!("not an entry plan");
-            let mut rejected = not_sent.clone();
-            rejected["last_error_code"] = json!("provider_rejected");
-            let mut other_effect = operation.clone();
-            other_effect["effect_kind"] = json!("another.effect");
-            let out = invoke(
-                "restore_entry",
-                state,
-                json!({
-                    "account_id":"a".repeat(64),"batch_complete":complete,
-                    "operations":[operation,not_sent,rejected,other_effect]
-                }),
-            );
-            assert_eq!(out["status"], "executed", "{out}");
-            state = out["result"]["state"].clone();
-            assert_eq!(state["entry"]["plan"], plan);
-            assert_eq!(state["entry"]["attempted"], true);
-            assert!(state["entry"]["evidence"].is_null());
-            assert!(out["result"]["requests"].as_array().unwrap().is_empty());
-        }
-        let reopened = invoke("open", state.clone(), Value::Null);
-        assert_eq!(reopened["result"]["state"], state);
-        assert!(reopened["result"]["requests"]
-            .as_array()
-            .unwrap()
-            .is_empty());
-        for fault in ["account", "provider", "payload", "size", "incomplete"] {
-            let mut bad_op = operation.clone();
-            let mut snapshot = json!({"account_id":"a".repeat(64),"batch_complete":true});
-            match fault {
-                "account" => bad_op["account_binding_id"] = json!("b".repeat(64)),
-                "provider" => bad_op["provider_id"] = json!("foreign"),
-                "payload" => bad_op["canonical_payload_json"] = json!("{}"),
-                "incomplete" => snapshot["batch_complete"] = Value::Null,
-                _ => (),
-            }
-            snapshot["operations"] = json!(vec![bad_op; if fault == "size" { 5 } else { 1 }]);
-            assert_eq!(
-                invoke("restore_entry", state.clone(), snapshot)["status"],
-                "rejected",
-                "{fault}"
-            );
-        }
     }
 
     #[test]
@@ -5393,7 +5263,8 @@ mod tests {
         let input = json!({"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
             "action":"inspect","state":state,"settings":next,"observed_at_ms":100_000_000});
         let out: Value =
-            serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&input).unwrap())).unwrap();
+            serde_json::from_slice(&evaluate_engine_json(&serde_json::to_vec(&input).unwrap()))
+                .unwrap();
         assert_eq!(out["status"], "executed");
         assert_eq!(
             out["result"]["state"]["frames"][0]["rebuild_levels"],
@@ -5440,9 +5311,10 @@ mod tests {
                 let input = json!({"schema_version":1,"plugin_id":PLUGIN_ID,
                     "host_method":"workspace", "action":"connect", "state":saved,
                     "settings":state.settings, "observed_at_ms":now});
-                let connected: Value =
-                    serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&input).unwrap()))
-                        .unwrap();
+                let connected: Value = serde_json::from_slice(&evaluate_engine_json(
+                    &serde_json::to_vec(&input).unwrap(),
+                ))
+                .unwrap();
                 assert_eq!(connected["status"], "executed", "{connected}");
                 assert_eq!(connected["result"]["state"], saved);
                 assert_eq!(
@@ -5515,7 +5387,8 @@ mod tests {
             "observed_at_ms":now,
             "execution":{"account_id":"a".repeat(64),"symbol":"BTC-USDT","allow_new_entries":true}});
         let output: Value =
-            serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&input).unwrap())).unwrap();
+            serde_json::from_slice(&evaluate_engine_json(&serde_json::to_vec(&input).unwrap()))
+                .unwrap();
         assert_eq!(output["status"], "executed", "{output}");
         let actions = output["result"]["view"]["actions"].as_array().unwrap();
         assert!(actions.len() <= 4);
@@ -5644,7 +5517,7 @@ mod tests {
     fn invoke_at(action: &str, state: Value, snapshot: Value, now: i64) -> Value {
         let raw = json!({"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
             "action":action,"state":state,"snapshot":snapshot,"observed_at_ms":now});
-        serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap()
+        serde_json::from_slice(&evaluate_engine_json(&serde_json::to_vec(&raw).unwrap())).unwrap()
     }
 
     #[test]
@@ -5679,12 +5552,7 @@ mod tests {
         let reopened = invoke("open", listed["result"]["state"].clone(), Value::Null);
         assert_eq!(reopened["result"]["state"], state);
         assert!(reopened["result"]["view"]["details_title"].is_null());
-        assert_eq!(
-            reopened["result"]["requests"],
-            json!([
-                {"kind":"order.snapshot.read", "scope":"durable", "provider":"bingx", "account_id":"a".repeat(64)}
-            ])
-        );
+        assert_eq!(reopened["result"]["requests"], json!([]));
         let mut full = snapshot.clone();
         full["orders"] = json!((0..64)
             .map(|i| {
@@ -5808,8 +5676,11 @@ mod tests {
         let raw = json!({"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
             "action":"inspect","state":null,"observed_at_ms":100_000_000,
             "settings":{"symbol":"XRP-USDT","detection_length":7,"margin":6.9}});
-        let first = evaluate_json(&serde_json::to_vec(&raw).unwrap());
-        assert_eq!(first, evaluate_json(&serde_json::to_vec(&raw).unwrap()));
+        let first = evaluate_engine_json(&serde_json::to_vec(&raw).unwrap());
+        assert_eq!(
+            first,
+            evaluate_engine_json(&serde_json::to_vec(&raw).unwrap())
+        );
         let out: Value = serde_json::from_slice(&first).unwrap();
         assert_eq!(out["result"]["requests"].as_array().unwrap().len(), 6);
         let field = &out["result"]["view"]["fields"][0];
@@ -5819,11 +5690,13 @@ mod tests {
         let mut long = raw.clone();
         long["settings"]["symbol"] = json!("NCSIRUSSELL20002USD-USDT");
         let long_result: Value =
-            serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&long).unwrap())).unwrap();
+            serde_json::from_slice(&evaluate_engine_json(&serde_json::to_vec(&long).unwrap()))
+                .unwrap();
         assert_eq!(long_result["status"], "executed");
         long["settings"]["symbol"] = json!(format!("{}-USDT", "A".repeat(61)));
         let invalid: Value =
-            serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&long).unwrap())).unwrap();
+            serde_json::from_slice(&evaluate_engine_json(&serde_json::to_vec(&long).unwrap()))
+                .unwrap();
         assert_ne!(invalid["status"], "executed");
         for request in out["result"]["requests"].as_array().unwrap() {
             assert_eq!(request["symbol"], "XRP-USDT");
@@ -5906,7 +5779,8 @@ mod tests {
             "action":"inspect","state":initial["result"]["state"],"observed_at_ms":100_000_000,
             "settings":{"symbol":"XRP-USDT","detection_length":7,"margin":6.9}});
         let out: Value =
-            serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap();
+            serde_json::from_slice(&evaluate_engine_json(&serde_json::to_vec(&raw).unwrap()))
+                .unwrap();
         assert!(out["result"]["state"]["frames"]
             .as_array()
             .unwrap()
@@ -5931,7 +5805,8 @@ mod tests {
             "snapshot":{"current_price":106.,"symbol":"BTC-USDT","timeframe":"5m",
                 "candles":snapshot["candles"]}});
         let replay: Value =
-            serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap();
+            serde_json::from_slice(&evaluate_engine_json(&serde_json::to_vec(&raw).unwrap()))
+                .unwrap();
         assert_eq!(replay["status"], "executed");
         assert_eq!(replay["result"]["state"], state);
     }
@@ -5945,8 +5820,10 @@ mod tests {
                 "snapshot":{"symbol":"BTC-USDT","timeframe":"5m","candles":bars,
                     "history_start_ms":bars[0].0,"history_end_ms":end,"batch_complete":true,
                     "current_price":100.,"current_candle":[end+300_000,100.,100.5,99.5,100.]}});
-            serde_json::from_slice::<Value>(&evaluate_json(&serde_json::to_vec(&raw).unwrap()))
-                .unwrap()
+            serde_json::from_slice::<Value>(&evaluate_engine_json(
+                &serde_json::to_vec(&raw).unwrap(),
+            ))
+            .unwrap()
         };
         let initial = inspect(Value::Null, &repeated_swings());
         let bars: Vec<_> = repeated_swings()
@@ -5977,8 +5854,10 @@ mod tests {
                 "snapshot":{"symbol":"BTC-USDT","timeframe":"5m","candles":batch,
                     "history_start_ms":start,"history_end_ms":end,"batch_complete":complete,
                     "current_price":100.,"current_candle":[end+300_000,100.,100.5,99.5,100.]}});
-            serde_json::from_slice::<Value>(&evaluate_json(&serde_json::to_vec(&raw).unwrap()))
-                .unwrap()
+            serde_json::from_slice::<Value>(&evaluate_engine_json(
+                &serde_json::to_vec(&raw).unwrap(),
+            ))
+            .unwrap()
         };
         let initial = inspect(Value::Null, &bars, true);
         assert_eq!(initial["status"], "executed", "{initial}");

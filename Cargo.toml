@@ -13,3 +13,7 @@ license = "MIT"
 lto = true
 opt-level = "z"
 codegen-units = 1
+
+# Protocol parsing and strategy chunks must share the existing sandbox fuel.
+[profile.release.package.hivra_jack_ventura_plugin]
+opt-level = 3

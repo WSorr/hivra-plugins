@@ -36,11 +36,9 @@ if not plugin_dirs:
 seen_ids: set[str] = set()
 allowed_capabilities = {
     "consensus_guard.read",
-    "content.draft.prepare",
-    "content.engagement.plan",
-    "content.feed.plan",
-    "content.reply.prepare",
-    "content.reply.delegate",
+    "network.http",
+    "credentials.use",
+    "inference.request",
     "workspace.render",
     "workspace.continue",
     "state.plugin.read_write",

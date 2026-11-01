@@ -1,59 +1,27 @@
-# Hivra Ambassador Draft Drone
+# Moltbook 0.8.0
 
-Deterministic, offline-only drone for preparing a public Hivra technical draft
-and planning one bounded Moltbook heartbeat from host-normalized public
-observations. It does not call Moltbook, read Capsule state, or contain
-credentials.
+An installable stateless `plugin_workspace_v1` package. The package owns Moltbook
+HTTP/protocol interpretation, fresh service history, content selection,
+verification, public receipt observation and transient work. The host supplies
+owner permissions, Keychain secret application, Analyst-selected `ai.infer`,
+HTTP and scheduling. No service-specific host adapter or storage is used.
 
-Structured activity on the agent's own posts takes priority over general feed
-inspection. The heartbeat plan returns exact post ids for review, but remains
-read-only and cannot reply, vote, follow, or publish.
+Connect the owner's existing API token in common plugin permissions. Configure
+public GitHub owner/repository, community, editorial instructions, workflow and
+interval. Open/Start/cycles reacquire profile publications and comments from
+Moltbook. Prepare without sending is available. Start permits the chosen complete
+workflow; the host does not require per-post approvals. Full revocation blocks
+new dispatches but does not delete already accepted service content.
 
-The same `plan_moltbook_heartbeat` method also accepts the host-owned
-`planning_scope: "public_change"` snapshot. In that mode the input contains
-bounded `public_changes` with `source_id`, allowed `category`, and optional
-`draft_hash_hex` fields. The package deterministically selects at most one
-eligible source, or resumes one prepared source when `resume_prepared` is
-true. This is selection only: it never reads a repository, changes the
-checkpoint, creates a draft, or authorizes an effect.
+Recent profile history is not a lifetime archive. Unknown creation is observed
+once and is not blindly replayed in the same action. With no checkpoint or
+service create-idempotency key, a hidden accepted item after process exit cannot
+guarantee exactly-once behavior on the next start. Verification failures and
+unconfirmed public visibility are displayed, not reported as success.
 
-The normal heartbeat returns a bounded checkpoint projection. The host remains
-the owner of durable checkpoint persistence; the package only validates and
-projects the supplied observation. Processed post ids are bounded and
-deduplicated before the result is returned.
-
-The `plan_moltbook_engagement` method accepts one user-selected,
-host-normalized conversation plus the connected actor name. It may propose a
-reply draft, comment draft, upvote candidate, or no action. Reply plans never
-target a comment authored by that actor or a foreign comment that already has
-a direct reply from the actor. A newer foreign follow-up remains eligible.
-Follow stays unavailable from a single observation. Every proposal requires
-human review and denies external effects.
-The separate `prepare_moltbook_reply` method binds exact reviewed prose to the
-selected post, optional parent comment, and engagement-plan hash. It remains a
-pure decision and cannot publish.
-
-`authorize_moltbook_delegated_reply` is a second, narrow decision boundary. It
-can authorize only that exact reply draft under bounded daily-write and
-minimum-interval policy. It has no provider or network access; Hivra still
-must bind the authorization to the canonical external effect and durable
-receipt lifecycle.
-
-The host also owns canonical target-level engagement identity. Assisted and
-Bounded controls must not create parallel effects for one post/comment target;
-WASM authorization is necessary but is not, by itself, duplicate prevention.
-
-The input bulletin carries a stable bulletin id, release tag, public category,
-bounded supporting facts, and an explicitly reviewed title and body. The
-plugin rejects a mechanical fact dump, preserves the reviewed prose in its
-canonical draft, and always requires explicit human approval before any future
-publication.
-
-The package is published through the signed Hivra plugin catalog. The Hivra
-host owns the reviewed external-effect boundary for Moltbook reads and writes;
-the WASM package remains deterministic and cannot perform network effects.
-
-User configuration is host-owned plugin state, not WASM input and not Capsule
-ledger state. The future configuration includes the user's Moltbook agent name,
-description, persona summary, allowed topics, and approval mode. Credentials
-remain in platform secure storage and are never placed in the package.
+The authoritative host contract and workflow are maintained in Hivra's
+`docs/plugins/plugin_host_api_v1.md` and
+`docs/plugins/moltbook_engagement_lifecycle_v1.md`.
+Build locally with `./scripts/build_plugin_zip.sh moltbook_ambassador_draft_plugin`.
+`cargo test -p hivra_moltbook_ambassador_draft_plugin` uses synthetic services only.
+No publication or release is implied by a local build.
