@@ -1,18 +1,19 @@
 {
   "schema": "hivra.plugin.manifest",
   "version": 1,
-  "release_version": "0.7.3",
+  "release_version": "0.8.0",
   "plugin_id": "hivra.contract.moltbook-ambassador.v1",
   "wasm_module": "hivra_moltbook_ambassador_draft_plugin.wasm",
   "capabilities": [
-    "content.draft.prepare",
-    "content.engagement.plan",
-    "content.feed.plan",
-    "content.reply.delegate",
-    "content.reply.prepare"
+    "credentials.use",
+    "inference.request",
+    "network.http",
+    "workspace.continue",
+    "workspace.render",
+    "workspace.schedule"
   ],
   "contract": {
-    "kind": "moltbook_ambassador_draft"
+    "kind": "plugin_workspace_v1"
   },
   "runtime": {
     "abi": "hivra_host_abi_v2",
