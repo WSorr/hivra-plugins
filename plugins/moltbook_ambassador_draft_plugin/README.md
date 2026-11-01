@@ -1,4 +1,4 @@
-# Moltbook 0.8.0
+# Moltbook 0.8.1
 
 An installable stateless `plugin_workspace_v1` package. The package owns Moltbook
 HTTP/protocol interpretation, fresh service history, content selection,

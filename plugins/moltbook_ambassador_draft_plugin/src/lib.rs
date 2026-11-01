@@ -164,9 +164,20 @@ fn response(result: &Value) -> Result<Value> {
     let data: Value =
         serde_json::from_str(string(&result["body"])).map_err(|_| "Unreadable service JSON")?;
     if !(200..300).contains(&status) || data["success"] == false {
+        let reason = ["message", "error"]
+            .iter()
+            .map(|key| string(&data[key]))
+            .find(|message| !message.trim().is_empty())
+            .unwrap_or("No service reason supplied");
+        let hint = string(&data["hint"]);
         return Err(format!(
-            "Service rejected request (HTTP {status}); {}",
-            clip(string(&data["error"]), 160)
+            "Service rejected request (HTTP {status}); {}{}",
+            clip(reason, 240),
+            if hint.trim().is_empty() {
+                String::new()
+            } else {
+                format!("; {}", clip(hint, 160))
+            }
         ));
     }
     Ok(data)
@@ -792,6 +803,45 @@ pub unsafe extern "C" fn hivra_evaluate_v1(ptr: u32, len: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rejected_account_read_preserves_service_reason_without_continuing() {
+        for (message, error, hint, expected) in [
+            (
+                "No API key provided",
+                "Unauthorized",
+                "Include your API key in the Authorization header: Bearer <api_key>",
+                "No API key provided",
+            ),
+            ("Invalid API key", "Unauthorized", "", "Invalid API key"),
+            ("", "Unauthorized", "", "Unauthorized"),
+        ] {
+            let opened: Value = serde_json::from_slice(&evaluate_json(
+                &json!({"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace","api_version":2,"action":"open","execution":{"enabled":true}}).to_string().into_bytes(),
+            )).unwrap();
+            let request = &opened["result"]["requests"][0];
+            assert_eq!(request["method"], "GET");
+            assert_eq!(request["url"], format!("{API}/agents/me"));
+            assert_eq!(
+                request["auth"]["headers"]["Authorization"]["prefix"],
+                "Bearer "
+            );
+            let output: Value = serde_json::from_slice(&evaluate_json(
+                &json!({"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace","api_version":2,"action":"receive","context":opened["result"]["context"],"result":{"id":"me","outcome":"response","status":401,"body":json!({"message":message,"error":error,"hint":hint}).to_string()}}).to_string().into_bytes(),
+            )).unwrap();
+            let result = &output["result"];
+            let shown = string(&result["view"]["message"]);
+            assert!(
+                shown.contains("HTTP 401") && shown.contains(expected),
+                "{shown}"
+            );
+            if !hint.is_empty() {
+                assert!(shown.contains(hint), "{shown}");
+            }
+            assert!(result["requests"].as_array().unwrap().is_empty());
+            assert!(result["state"].is_null());
+        }
+    }
+
     #[derive(Default)]
     struct Service {
         posts: Vec<Value>,
