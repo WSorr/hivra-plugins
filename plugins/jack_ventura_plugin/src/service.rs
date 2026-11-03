@@ -73,6 +73,10 @@ struct Work {
     #[serde(default)]
     candle_wait: bool,
     #[serde(default)]
+    read_retries: u8,
+    #[serde(default)]
+    read_retry_wait: bool,
+    #[serde(default)]
     sequence: usize,
     #[serde(default)]
     autonomous: bool,
@@ -549,7 +553,7 @@ fn stop_coverage(raw: &Value, position: &PositionObservation) -> R<StopCoverage>
     })
 }
 
-fn data(result: &Value) -> R<Value> {
+fn service_response(result: &Value) -> R<Value> {
     if result["outcome"] != "response"
         || result["status"]
             .as_u64()
@@ -559,10 +563,7 @@ fn data(result: &Value) -> R<Value> {
     }
     let raw: Value = serde_json::from_str(result["body"].as_str().ok_or("Missing response body")?)
         .map_err(|_| "Unreadable service response")?;
-    if raw["code"] != 0 {
-        return Err(format!("Service rejected read: {}", raw["code"]));
-    }
-    Ok(raw["data"].clone())
+    Ok(raw)
 }
 
 fn order(c: &Checkpoint, job: &Value, raw: &Value, now: i64, exit: bool) -> R<Value> {
@@ -724,6 +725,11 @@ fn bars(raw: &Value) -> R<Vec<Value>> {
     Ok(out)
 }
 fn request_for(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Option<Value>> {
+    if w.read_retry_wait {
+        w.read_retry_wait = false;
+        return Ok(Some(json!({"kind":"runtime.wait","id":"read_retry",
+            "continuation":"service_result","milliseconds":5000})));
+    }
     loop {
         if w.job.is_none() {
             if !w.queue.is_empty() {
@@ -969,7 +975,10 @@ fn request_for(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Option<Value>> {
 }
 
 fn receive(c: &mut Checkpoint, w: &mut Work, result: &Value, now: i64) -> R<()> {
-    if result["id"] == "chunk" || result["id"] == "candle_wait" {
+    if matches!(
+        result["id"].as_str(),
+        Some("chunk" | "candle_wait" | "read_retry")
+    ) {
         return Ok(());
     }
     let mut j = w.job.take().ok_or("No pending package continuation")?;
@@ -1004,7 +1013,19 @@ fn receive(c: &mut Checkpoint, w: &mut Work, result: &Value, now: i64) -> R<()> 
         w.job = Some(j);
         return Ok(());
     }
-    let raw = data(result)?;
+    let response = service_response(result)?;
+    if response["code"] != 0 {
+        // Only a read rejected before returning data is repeated. Bound retries
+        // across the entire action; mutations keep their reconcile-only path.
+        if kind == "market.candles.read" && response["code"] == 100410 && w.read_retries < 2 {
+            w.read_retries += 1;
+            w.read_retry_wait = true;
+            w.job = Some(j);
+            return Ok(());
+        }
+        return Err(format!("Service rejected read: {}", response["code"]));
+    }
+    let raw = response["data"].clone();
     if kind == "market.candles.read" {
         let at = j["at"].as_i64().unwrap();
         let span = duration(j["timeframe"].as_str().unwrap())?;
@@ -1739,6 +1760,30 @@ mod tests {
         panic!("Unbounded observation")
     }
     #[test]
+    fn transient_candle_rejections_have_two_read_only_retries_per_action() {
+        let now = 1_800_000_000_000_i64;
+        let mut c = Checkpoint::default();
+        let original = serde_json::to_value(&c).unwrap();
+        let job = json!({"kind":"market.candles.read","symbol":"ACH-USDT", "timeframe":"1m"});
+        let mut w = Work {
+            job: Some(job),
+            ..Work::default()
+        };
+        let rejection = json!({"status":200,"outcome":"response","body":"{\"code\":100410}"});
+        for _ in 0..2 {
+            let read = request_for(&mut c, &mut w, now).unwrap().unwrap();
+            assert_eq!(read["method"], "GET");
+            receive(&mut c, &mut w, &rejection, now).unwrap();
+            let wait = request_for(&mut c, &mut w, now).unwrap().unwrap();
+            assert_eq!(wait["kind"], "runtime.wait");
+            assert_eq!(wait["milliseconds"], 5000);
+            receive(&mut c, &mut w, &json!({"id":"read_retry"}), now + 5000).unwrap();
+        }
+        request_for(&mut c, &mut w, now).unwrap();
+        assert!(receive(&mut c, &mut w, &rejection, now).is_err());
+        assert_eq!(serde_json::to_value(&c).unwrap(), original);
+    }
+    #[test]
     fn candle_reads_wait_without_replaying_or_consuming_the_pending_job() {
         let now = 1_800_000_000_000_i64;
         let mut c = Checkpoint::default();
@@ -1991,7 +2036,7 @@ mod tests {
         for raw in [json!({}), json!({"orderId":"999","symbol":"OTHER-USDT"})] {
             assert!(order(&c, &j, &raw, 100_000_000, false).is_err());
         }
-        assert!(data(&json!({"outcome":"unknown","body":"{}"})).is_err());
+        assert!(service_response(&json!({"outcome":"unknown","body":"{}"})).is_err());
         assert!(bars(&json!([[0, 1, 2]])).is_err());
     }
 
