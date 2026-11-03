@@ -13,6 +13,7 @@ const LEVERAGE: &str = "/openApi/swap/v2/trade/leverage";
 const MODE: &str = "/openApi/swap/v1/positionSide/dual";
 const CONTRACT: &str = "/openApi/swap/v2/quote/contracts";
 const BALANCE: &str = "/openApi/swap/v3/user/balance";
+const CANDLE_HISTORY: i64 = 600;
 const CANDLES: &str = "/openApi/swap/v3/quote/klines";
 
 type R<T> = Result<T, String>;
@@ -67,8 +68,6 @@ struct Work {
     // Service observation for this action only; never part of the checkpoint.
     #[serde(default)]
     protection: Option<(PositionObservation, i64, StopCoverage)>,
-    #[serde(default)]
-    page: usize,
     #[serde(default)]
     candle_wait: bool,
     #[serde(default)]
@@ -730,7 +729,6 @@ fn request_for(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Option<Value>> {
                 w.account = Value::Null;
                 w.lifecycle = Value::Null;
                 w.rows.clear();
-                w.page = 0;
             } else if let Some(resume) = w.resume.take() {
                 engine(c, w, &resume, None, None, now)?;
                 continue;
@@ -815,9 +813,9 @@ fn request_for(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Option<Value>> {
                     w.job = Some(j);
                 }
                 let _ = span;
-                // Pace the next HTTP page through the common wait primitive.
+                // Pace the next timeframe through the common wait primitive.
                 // Internal strategy chunks need no service throttle; reuse the
-                // final chunk continuation rather than adding one per page.
+                // final chunk continuation rather than adding another invocation.
                 return Ok(Some(if w.rows.is_empty() {
                     json!({"kind":"runtime.wait","id":"chunk","continuation":"service_result","milliseconds":1200})
                 } else {
@@ -836,14 +834,14 @@ fn request_for(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Option<Value>> {
             if j["stage"] == "quote" {
                 p.insert("limit".into(), "2".into());
             } else {
-                p.insert("limit".into(), "24".into());
-                let start = j["first"].as_i64().unwrap() + w.page as i64 * span;
+                p.insert("limit".into(), CANDLE_HISTORY.to_string());
+                let start = j["first"].as_i64().unwrap();
                 p.insert("startTime".into(), start.to_string());
                 p.insert(
                     "endTime".into(),
                     // The service excludes endTime; the package's history_end
                     // remains the last closed candle, inclusive.
-                    (start + 24 * span).min(current).to_string(),
+                    (start + CANDLE_HISTORY * span).min(current).to_string(),
                 );
             }
             w.job = Some(j);
@@ -1020,8 +1018,9 @@ fn receive(c: &mut Checkpoint, w: &mut Work, result: &Value, now: i64) -> R<()> 
             j["stage"] = json!("history");
             w.candle_wait = true;
         } else {
-            let start = j["first"].as_i64().unwrap() + w.page as i64 * span;
-            let expected = ((j["last"].as_i64().unwrap() - start) / span + 1).clamp(0, 24) as usize;
+            let start = j["first"].as_i64().unwrap();
+            let expected = ((j["last"].as_i64().unwrap() - start) / span + 1)
+                .clamp(0, CANDLE_HISTORY) as usize;
             if rows.len() != expected
                 || rows
                     .iter()
@@ -1030,7 +1029,6 @@ fn receive(c: &mut Checkpoint, w: &mut Work, result: &Value, now: i64) -> R<()> 
             {
                 return Err("Partial or gapped candle history; no effect sent".into());
             }
-            w.page += rows.len();
             w.rows = rows;
         }
         w.job = Some(j);
@@ -1635,7 +1633,9 @@ pub(super) fn evaluate_json(raw: &[u8]) -> Vec<u8> {
             serde_json::value::to_raw_value(&c).map_err(|_| "Invalid checkpoint")?
         };
         let context = serde_json::value::to_raw_value(&w).map_err(|_| "Invalid continuation")?;
-        if state.get().len() > 32 * 1024 || context.get().len() > 16 * 1024 {
+        // One bounded 600-candle observation stays transient in this action.
+        // Strategy chunks remain 12 candles; no service history enters the checkpoint.
+        if state.get().len() > 32 * 1024 || context.get().len() > 128 * 1024 {
             return Err("Package checkpoint or continuation exceeds its bound".into());
         }
         Ok(PackageOutput {
@@ -1790,7 +1790,7 @@ mod tests {
                 .split('&')
                 .map(|p| p.split_once('=').unwrap())
                 .collect();
-            let end = (start + 24 * span).min(current);
+            let end = (start + CANDLE_HISTORY * span).min(current);
             assert_eq!(query["startTime"], start.to_string());
             assert_eq!(query["endTime"], end.to_string());
             let pending = serde_json::to_value(&w).unwrap();
@@ -1812,7 +1812,7 @@ mod tests {
                 );
                 assert_eq!(result.is_ok(), !gapped);
                 if !gapped {
-                    assert_eq!(w.rows.len(), count.min(24) as usize);
+                    assert_eq!(w.rows.len(), count.min(CANDLE_HISTORY) as usize);
                     assert!(w.rows.iter().all(|r| r[0].as_i64().unwrap() < current));
                 }
             }
