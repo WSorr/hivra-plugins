@@ -1404,7 +1404,7 @@ struct PackageEnvelope {
 // Preserve the opaque strategy checkpoint while this independent read runs.
 fn instrument_choices(input: &Invocation) -> R<PackageOutput> {
     let mut requests = Vec::new();
-    let view = if input.action == "instruments" {
+    let mut view = if input.action == "instruments" {
         requests.push(json!({"kind":"api.describe","id":"instrument-api","continuation":"instruments_capabilities"}));
         json!({"title":"Choose instrument","message":"Checking the common response capabilities"})
     } else if input.action == "instruments_capabilities" {
@@ -1476,6 +1476,10 @@ fn instrument_choices(input: &Invocation) -> R<PackageOutput> {
         }
         json!({"title":"Choose instrument","options":symbols,"message":"Active USDT contracts open for API entry. Availability is checked again before entry."})
     };
+    view["details"] = json!("");
+    for field in ["fields", "actions", "columns", "rows"] {
+        view[field] = json!([]);
+    }
     Ok(PackageOutput {
         state: input
             .state
@@ -2083,9 +2087,19 @@ mod tests {
     }
     #[test]
     fn public_instrument_selection_preserves_opaque_state_and_requires_the_common_ability() {
+        let complete_view = |response: &Value| {
+            let view = &response["result"]["view"];
+            for field in ["title", "message", "details"] {
+                assert!(view[field].is_string());
+            }
+            for field in ["fields", "actions", "columns", "rows"] {
+                assert!(view[field].is_array());
+            }
+        };
         let now = 100_000_001;
         let state = json!({"private_shape":"replacement","unresolved_delivery":"keep"});
         let start = invoke("instruments", state.clone(), Value::Null, Value::Null, now);
+        complete_view(&start);
         assert_eq!(start["result"]["state"], state);
         assert_eq!(start["result"]["requests"][0]["kind"], "api.describe");
         let old = invoke(
@@ -2108,6 +2122,7 @@ mod tests {
             now,
         );
         assert_eq!(available["result"]["state"], state);
+        complete_view(&available);
         let request = &available["result"]["requests"][0];
         assert_eq!(request["method"], "GET");
         assert!(request.get("credential").is_none());
@@ -2125,6 +2140,7 @@ mod tests {
                 now,
             );
             let mut expected = vec![symbol, "BTC-USDT"];
+            complete_view(&options);
             expected.sort();
             assert_eq!(options["result"]["view"]["options"], json!(expected));
             assert_eq!(options["result"]["state"], state);
