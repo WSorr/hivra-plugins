@@ -828,7 +828,9 @@ fn request_for(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Option<Value>> {
                 p.insert("startTime".into(), start.to_string());
                 p.insert(
                     "endTime".into(),
-                    (start + 23 * span).min(current - span).to_string(),
+                    // The service excludes endTime; the package's history_end
+                    // remains the last closed candle, inclusive.
+                    (start + 24 * span).min(current).to_string(),
                 );
             }
             w.job = Some(j);
@@ -1719,6 +1721,58 @@ mod tests {
             receive(&mut c,&mut w,&json!({"outcome":"response","status":200,"body":json!({"code":0,"data":raw}).to_string()}),now).unwrap();
         }
         panic!("Unbounded observation")
+    }
+    #[test]
+    fn market_http_pages_exclude_end_time_and_keep_strict_gap_checks() {
+        let current = 1_800_000_000_000_i64;
+        let span = 60_000_i64;
+        for count in [600, 24, 3] {
+            let start = current - count * span;
+            let mut c = Checkpoint::default();
+            let mut w = Work {
+                job: Some(
+                    json!({"kind":"market.candles.read","symbol":"ACH-USDT", "timeframe":"1m",
+                    "stage":"history","at":current,"first":start,"last":current-span}),
+                ),
+                ..Work::default()
+            };
+            let request = request_for(&mut c, &mut w, current).unwrap().unwrap();
+            let query: BTreeMap<_, _> = request["url"]
+                .as_str()
+                .unwrap()
+                .split_once('?')
+                .unwrap()
+                .1
+                .split('&')
+                .map(|p| p.split_once('=').unwrap())
+                .collect();
+            let end = (start + 24 * span).min(current);
+            assert_eq!(query["startTime"], start.to_string());
+            assert_eq!(query["endTime"], end.to_string());
+            let pending = serde_json::to_value(&w).unwrap();
+            for gapped in [false, true] {
+                let mut w: Work = serde_json::from_value(pending.clone()).unwrap();
+                let mut rows: Vec<_> = (start..end)
+                    .step_by(span as usize)
+                    .map(|t| json!([t, 100, 101, 99, 100]))
+                    .collect();
+                if gapped {
+                    rows.remove(0);
+                }
+                let result = receive(
+                    &mut c,
+                    &mut w,
+                    &json!({"outcome":"response","status":200,
+                    "body":json!({"code":0,"data":rows}).to_string()}),
+                    current,
+                );
+                assert_eq!(result.is_ok(), !gapped);
+                if !gapped {
+                    assert_eq!(w.rows.len(), count.min(24) as usize);
+                    assert!(w.rows.iter().all(|r| r[0].as_i64().unwrap() < current));
+                }
+            }
+        }
     }
     #[test]
     fn exported_api_has_only_common_operations_and_an_opaque_checkpoint() {
