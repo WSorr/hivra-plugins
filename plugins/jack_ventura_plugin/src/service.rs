@@ -845,7 +845,9 @@ fn request_for(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Option<Value>> {
                 );
             }
             w.job = Some(j);
-            return Ok(Some(http(w, CANDLES, "GET", p, false, now)));
+            let mut request = http(w, CANDLES, "GET", p, false, now);
+            request["max_response_bytes"] = json!(256 * 1024);
+            return Ok(Some(request));
         }
         if j["stage"].is_null() {
             j["stage"] = json!("uid");
@@ -1781,6 +1783,7 @@ mod tests {
                 ..Work::default()
             };
             let request = request_for(&mut c, &mut w, current).unwrap().unwrap();
+            assert_eq!(request["max_response_bytes"], 256 * 1024);
             let query: BTreeMap<_, _> = request["url"]
                 .as_str()
                 .unwrap()
