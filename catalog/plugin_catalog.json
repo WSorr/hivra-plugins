@@ -7,36 +7,36 @@
     {
       "id": "capsule-chat-test",
       "plugin_id": "hivra.contract.capsule-chat.v1",
-      "display_name": "Capsule Chat (Test Plugin)",
-      "version": "0.2.2",
+      "display_name": "Capsule Chat",
+      "version": "0.2.3",
       "package_kind": "zip",
-      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.10-plugins/capsule_chat_test_plugin-0.2.2.zip",
-      "sha256_hex": "dc416c95041b4a6b889b82cf0fdbbe721db7d6ffee8547569fe23036f24cc862"
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.11-plugins/capsule_chat_test_plugin-0.2.3.zip",
+      "sha256_hex": "72b06bf290536c85b2a57fc17bfe64099e7907c9620cc68a755796abc530225f"
     },
     {
       "id": "moltbook-ambassador",
       "plugin_id": "hivra.contract.moltbook-ambassador.v1",
       "display_name": "Moltbook Ambassador",
-      "version": "0.7.3",
+      "version": "0.8.2",
       "package_kind": "zip",
-      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.10-plugins/moltbook_ambassador_draft_plugin-0.7.3.zip",
-      "sha256_hex": "8a506534134b4c166332da445154cc7961f900470b49a6e320f9114e06a702b4"
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.11-plugins/moltbook_ambassador_draft_plugin-0.8.2.zip",
+      "sha256_hex": "ec1ebe13db72cf73d85d5db3099826f880d6719d66f30c5e018f81e22e09a611"
     },
     {
       "id": "jack-ventura",
       "plugin_id": "hivra.contract.jack-ventura.v1",
       "display_name": "Jack Ventura",
-      "version": "0.1.13",
+      "version": "0.2.1",
       "package_kind": "zip",
-      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.10-plugins/jack_ventura_plugin-0.1.13.zip",
-      "sha256_hex": "0b95b8f0047e652d8b801c19d2f1287fed9da0f4f99d856347d7754e3f760c61"
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.11-plugins/jack_ventura_plugin-0.2.1.zip",
+      "sha256_hex": "b4a06da9cb7c59874b149680cc5b129f58a197f1b249920d347a981f11f41256"
     }
   ],
   "signatures": [
     {
       "algorithm": "ed25519",
       "key_id": "f4757da54ecb6f16431bcfb4fcc947633d6f68c9b4576b69ddb61fc4fe2de7a3",
-      "signature_hex": "80e20c76ab47bdd580d65e9751bb3287af8e2230fd979b57250cdc02e2b245e4ed740798eadc9cdbd5bc02a96ea33629211d1b5ffe6213a5a3252a837c0c2a0d"
+      "signature_hex": "a4a5ce65b74d98dce61c63bc9a1375151d75a8850d5af5804b92883d31925490c25f1e04da804acf68923e10b0b7c7f818220ea5eca7631467957c9067821f05"
     }
   ]
 }
