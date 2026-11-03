@@ -95,32 +95,39 @@ publishing assets.
 - `hivra.contract.capsule-chat.v1`
 - `hivra.contract.moltbook-ambassador.v1` (bounded observation and deterministic
   assisted post/reply preparation; network effects remain host-owned)
-- `hivra.contract.jack-ventura.v1`: JackV `3b81753` line formation and
-  package-owned workspace on
-  `1D/4H/1H/30M/15M/5M`. Settings, swings, ATR, first-known times and touched
-  levels live in WASM state. It requests public candles and normalized
-  read-only account evidence through `plugin_workspace_v1`, and computes
-  quantity and stop previews from margin and existing directional leverage.
-  Advanced `Timeframes (all, 5m or 1m)` accepts `all` (the existing six-frame
-  policy), `5m` or `1m` for entries and new profit targets on that frame. Returning
-  to `all` restores the original policy without replacing the package.
-  Either single-frame mode requests one candle history; while a previously managed
-  order belongs to another timeframe, it also refreshes that original frame
-  without cancelling or rewriting the order. Other trade settings remain
-  fixed while an order is managed. Saved settings without this field retain
-  the original six-frame policy.
-  Keys remain in the host; advanced settings and calculation evidence are
-  optional. It can prepare one immutable entry for explicit host confirmation
-  and interpret exact provider-order evidence after restart.
-  Renewing credentials for the same BingX account remains available while an
-  order or position is managed, including an unknown submission outcome.
-  Account admission preserves that attempt and rejects another account while
-  current or parked instruments still have managed orders. It does not grant Start.
-  The host reads
-  current selected-instrument open orders; WASM presents their transient
-  list without adopting manual orders or storing another order history.
-  The host owns signing and the existing durable effect journal; uncertain outcomes do not
-  authorize duplicate entries. Attached stop requests do not prove protection.
-  Autonomous trading, fill-based protection/profit exits and VPS operation
-  remain incomplete. Build with `./scripts/build_plugin_zip.sh jack_ventura_plugin`
-  and install the local ZIP in a host supporting that workspace contract.
+- `hivra.contract.jack-ventura.v1`: JackV `3b81753` line formation and a
+  package-owned workspace through common API v2. The package owns service
+  requests, account binding, entry/exit planning, response parsing and recovery;
+  the host supplies scoped HTTP/signing, secret application, scheduling and an
+  opaque checkpoint. No host trade controller or effect journal is required.
+  Timeframes are `all` (1D/4H/1H/30M/15M/5M), `5m`, or `1m`; a managed order's
+  original frame remains observed when the owner changes the selection.
+  Instrument selection reads the complete public contract catalog and offers
+  active USDT contracts open for API entry through the common choice action.
+  The catalog is transient; only the owner-selected symbol is retained.
+  First-time selection asks only for public GET access, without exchange keys
+  or a scheduled workflow; connection and Start use their own explicit grant.
+  Availability/rules are checked again by entry preflight. This requires a host
+  advertising `response_json_paths` with a 1 MiB source bound;
+  older Capsules show an update requirement instead of fetching oversized input.
+  Start permits bounded autonomous cycles; Stop new entries keeps observation
+  and reducing management available. Full host revocation ends new dispatch,
+  without cancelling existing exchange orders or closing positions.
+  Pending identities survive ordinary restart; unknown delivery is reconciled
+  by exact identity and never blindly resubmitted. Manual account orders are
+  observed without being adopted or cancelled.
+  Current stop coverage is read from the service alongside a unique matching
+  managed position: active STOP_MARKET, closing direction, hedge-side or explicit
+  one-way reducing/close-position semantics, optional exact position ID, remaining
+  quantity and trigger source. Full/partial coverage, multiple matching stops and
+  unverified observations are distinct. Coverage is transient action context,
+  never an extra provider-history store; reopen, stale data, changed position or
+  a failed read require fresh observation. An observed stop does not guarantee
+  execution price or a maximum loss. This is observation, not automatic repair
+  of missing or incorrectly sized protection.
+  Entry stops remain attached to the entry request; fill-based amendment is
+  outside the owner-selected scope. Actual full TP/SL closure and continuous
+  VPS operation still require qualification. No live
+  trade is authorized by local checks. Build with
+  `./scripts/build_plugin_zip.sh jack_ventura_plugin`; package changes within
+  the existing API do not require a Capsule rebuild.

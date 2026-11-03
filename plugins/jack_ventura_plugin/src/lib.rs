@@ -1943,7 +1943,7 @@ fn evaluate_state(input: Input<'_>, mut state: State) -> Result<Output<'_>, Stri
             }
         }
         if autonomous {
-            actions.push(json!({"id":"stop", "label":"Stop new entries", "host":"workspace.stop"}));
+            actions.push(json!({"id":"stop", "label":"Stop new entries"}));
         } else {
             actions.push(json!({"id":"start", "label":"Start cycles", "host":"workspace.start"}));
         }
@@ -2407,7 +2407,7 @@ fn position_status(state: &State, entry: &ManagedEntry, now: i64) -> String {
     match profit_candidate(state, position, now) {
         Some((tf, level)) => message.push_str(&format!(
             "\nOpposite-line exit candidate: {} on {} for the remaining {} quantity. Observation only; no profit exit is placed or fixed yet.", level.price, tf.to_uppercase(), position.quantity)),
-        None => message.push_str("\nNo current eligible opposite-line exit candidate. A target is not invented; profit exit and position protection remain unverified."),
+        None => message.push_str("\nNo current eligible opposite-line exit candidate. A target is not invented; no profit exit is verified."),
     }
     message
 }
@@ -2660,7 +2660,7 @@ fn view_for_execution(state: &State, now: i64, autonomous: bool, render_lines: b
         })
         .collect();
     if autonomous {
-        message.push_str("\nEach cycle uses fresh market/account evidence; no eligible line means waiting. Invalidated unfilled entries may be cancelled before replacement. Reducing exits use matching position evidence and a profitable opposite line. Exchange-side stop protection remains unverified.");
+        message.push_str("\nEach cycle uses fresh market/account evidence; no eligible line means waiting. Invalidated unfilled entries may be cancelled before replacement. Reducing exits use matching position evidence and a profitable opposite line. Entry and profit-exit receipts do not establish stop protection.");
     }
     let summary = state
         .account
@@ -2685,7 +2685,7 @@ fn view_for_execution(state: &State, now: i64, autonomous: bool, render_lines: b
         .unwrap_or_else(|| {
             "BingX LIVE / account not connected. Observation works without keys.".into()
         });
-    let connect = json!({"id":"connect", "label":if state.account.is_some() {"Reconnect account"} else {"Connect account"}, "host":"bingx.account.connect"});
+    let connect = json!({"id":"connect", "label":if state.account.is_some() {"Reconnect account"} else {"Connect account"}, "host":"workspace.authorize"});
     let mut actions = vec![
         connect.clone(),
         json!({"id":"inspect", "label":"Refresh zones / preview"}),
@@ -2700,20 +2700,20 @@ fn view_for_execution(state: &State, now: i64, autonomous: bool, render_lines: b
             };
             actions.insert(0, connect);
             if let Some(cancel) = pending_cancellation(state, now) {
-                actions.push(json!({"id":"cancel_entry", "label":"Cancel invalidated entry", "host":"bingx.order.submit"}));
+                actions.push(json!({"id":"cancel_entry", "label":"Cancel invalidated entry"}));
                 confirmation = cancel;
             } else if let Some(exit) = entry
                 .profit_exit
                 .as_ref()
                 .filter(|e| !e.attempted && now <= e.plan.expires_at_ms)
             {
-                actions.push(json!({"id":"place_exit", "label":"Place opposite-line exit", "host":"bingx.order.submit"}));
+                actions.push(json!({"id":"place_exit", "label":"Place opposite-line exit"}));
                 confirmation = exit.request();
             }
         } else {
             actions.push(json!({"id":"prepare_entry", "label":"Prepare one entry"}));
             if now <= entry.plan.expires_at_ms {
-                actions.push(json!({"id":"place_entry", "label":"Place this entry", "host":"bingx.order.submit"}));
+                actions.push(json!({"id":"place_entry", "label":"Place this entry"}));
                 confirmation = entry.request("order.entry.place");
             }
         }
@@ -2728,10 +2728,9 @@ fn view_for_execution(state: &State, now: i64, autonomous: bool, render_lines: b
     }
     json!({"title":"Jack Ventura", "message":message, "summary":summary, "confirmation":confirmation,
         "fields":[
-            {"id":"symbol", "label":"Instrument", "type":"choice", "value":state.settings.symbol,
-                "source":{"kind":"market.instruments.read", "provider":"bingx"}},
-            {"id":"entry_margin", "label":"Margin per entry (USDT, before leverage)", "type":"number", "value":state.settings.entry_margin},
-            {"id":"stop_percent", "label":"Stop loss (% of entry margin)", "type":"number", "value":state.settings.stop_percent},
+            {"id":"symbol", "label":"Instrument", "type":"choice", "value":state.settings.symbol, "source":{"action":"instruments", "access":service::market_access()}},
+            {"id":"entry_margin", "label":"Entry margin (USDT)", "type":"number", "value":state.settings.entry_margin},
+            {"id":"stop_percent", "label":"Stop budget (% of margin)", "type":"number", "value":state.settings.stop_percent},
             {"id":"timeframes", "label":"Timeframes (all, 5m or 1m)", "type":"text", "value":state.settings.timeframes, "advanced":true},
             {"id":"detection_length", "label":"Detection length", "type":"integer", "value":state.settings.detection_length, "advanced":true},
             {"id":"margin", "label":"Cluster margin", "type":"number", "value":state.settings.margin, "advanced":true}
@@ -5340,7 +5339,7 @@ mod tests {
                 assert_eq!(reopened["status"], "executed", "{reopened}");
                 assert_eq!(reopened["result"]["state"]["entry"], saved["entry"]);
                 let actions = reopened["result"]["view"]["actions"].as_array().unwrap();
-                assert!(actions.iter().any(|a| a["host"] == "bingx.account.connect"));
+                assert!(actions.iter().any(|a| a["host"] == "workspace.authorize"));
 
                 let mut other = account();
                 other.account_id = "b".repeat(64);
@@ -5686,7 +5685,8 @@ mod tests {
         let field = &out["result"]["view"]["fields"][0];
         assert_eq!(field["type"], "choice");
         assert_eq!(field["value"], "XRP-USDT");
-        assert_eq!(field["source"]["kind"], "market.instruments.read");
+        assert_eq!(field["source"]["action"], "instruments");
+        assert_eq!(field["source"]["access"], service::market_access());
         let mut long = raw.clone();
         long["settings"]["symbol"] = json!("NCSIRUSSELL20002USD-USDT");
         let long_result: Value =
