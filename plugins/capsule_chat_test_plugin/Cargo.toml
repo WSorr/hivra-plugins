@@ -1,6 +1,6 @@
 [package]
 name = "hivra_capsule_chat_test_plugin"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 license.workspace = true
 publish = false
