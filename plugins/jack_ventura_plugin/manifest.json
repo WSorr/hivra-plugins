@@ -3,6 +3,7 @@
   "version": 1,
   "release_version": "0.2.1",
   "plugin_id": "hivra.contract.jack-ventura.v1",
+  "display_name": "Jack Ventura",
   "wasm_module": "hivra_jack_ventura_plugin.wasm",
   "capabilities": [
     "credentials.use",

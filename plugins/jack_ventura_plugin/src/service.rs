@@ -340,7 +340,9 @@ fn presentation(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Value> {
         });
     let mut message = if let Some(entry) = c.engine.entry.as_ref() {
         if !entry.attempted {
-            format!("Entry prepared · {} {} at {}\nNot sent. Market and account evidence are checked before dispatch.", entry.plan.side.to_uppercase(), entry.plan.quantity, entry.plan.price)
+            "Entry not sent\nStart Jack to calculate and manage entries from current market and account data.".into()
+        } else if entry.not_sent() {
+            "Entry not sent\nNo exchange order was created. Jack recalculates on the next running cycle.".into()
         } else if let Some(position) = entry.position.as_ref() {
             format!(
                 "{} · {} {} {}\nAverage fill {}",
@@ -369,6 +371,8 @@ fn presentation(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Value> {
         }
     } else if c.engine.account.is_none() {
         "Connect an account to trade\nChoose your instrument, entry margin and stop budget before Start.".into()
+    } else if w.running && c.new_entries {
+        "Jack is running\nWaiting for an eligible entry. Orders and positions are managed automatically; no further entry confirmation is needed.".into()
     } else if c.engine.retired_before_ms > 0 {
         "Previous position/order is no longer active\nClosure reason and PnL are not inferred from a flat position.".into()
     } else {
@@ -422,8 +426,13 @@ fn presentation(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Value> {
     }
     view["message"] = json!(message);
     view["summary"] = json!(format!(
-        "BingX · LIVE · {}\n{} · Entry margin {} USDT · Stop budget {}% of margin",
+        "BingX · LIVE · {} · {}\n{} · Entry margin {} USDT · Stop budget {}% of margin",
         c.engine.settings.symbol,
+        if c.engine.settings.timeframes == "all" {
+            "All six timeframes"
+        } else {
+            c.engine.settings.timeframes.as_str()
+        },
         c.engine
             .account
             .as_ref()
@@ -439,32 +448,39 @@ fn presentation(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Value> {
         stop_details
     ));
     view["details_title"] = json!("Orders and calculation evidence");
-    if let Some(actions) = view["actions"].as_array_mut() {
-        actions.sort_by_key(|a| match a["id"].as_str().unwrap_or("") {
-            "stop" | "refresh_order" => 0,
-            "start" => 1,
-            "connect" if c.engine.account.is_none() => 0,
-            "connect" => 3,
-            _ => 2,
+    // One public trading journey. Private prepare/place/cancel commands are
+    // used by the same cycle executor, never a parallel manual-entry workflow.
+    let connected = c.engine.account.is_some();
+    let managed = c
+        .engine
+        .entry
+        .as_ref()
+        .filter(|e| e.attempted && !e.not_sent());
+    let mut actions = Vec::new();
+    if connected {
+        actions.push(if w.running && c.new_entries {
+            json!({"id":"stop","label":"Stop new entries"})
+        } else {
+            json!({"id":"start","label":"Start Jack","host":"workspace.start"})
         });
-        for action in actions {
-            action["label"] = match action["id"].as_str() {
-                Some("refresh_order") => json!(if c
-                    .engine
-                    .entry
-                    .as_ref()
-                    .is_some_and(|e| e.position.is_some())
-                {
-                    "Refresh position"
-                } else {
-                    "Refresh order"
-                }),
-                Some("list_orders") => json!("Open orders"),
-                Some("inspect") => json!("Refresh market"),
-                Some("start") => json!("Start Jack"),
-                _ => action["label"].clone(),
-            };
-        }
+    }
+    actions.push(json!({"id":"connect","label":if connected {"Reconnect account"} else {"Connect account"},"host":"workspace.authorize"}));
+    actions.push(match managed {
+        Some(entry) => json!({"id":"refresh_order","label":if entry.position.is_some() {"Refresh position"} else {"Refresh order"}}),
+        None => json!({"id":"inspect","label":"Refresh market"}),
+    });
+    if connected {
+        actions.push(json!({"id":"list_orders","label":"Open orders"}));
+    }
+    view["actions"] = json!(actions);
+    if let Some(field) = view["fields"]
+        .as_array_mut()
+        .and_then(|fields| fields.iter_mut().find(|f| f["id"] == "timeframes"))
+    {
+        field["type"] = json!("choice");
+        field["label"] = json!("Timeframe");
+        field["source"] = json!({"action":"timeframes"});
+        field.as_object_mut().unwrap().remove("advanced");
     }
     Ok(view)
 }
@@ -1439,11 +1455,12 @@ struct PackageEnvelope {
     error_message: Option<String>,
 }
 
-// A choice reads the public service catalog, never the strategy checkpoint.
-// Preserve the opaque strategy checkpoint while this independent read runs.
-fn instrument_choices(input: &Invocation) -> R<PackageOutput> {
+// Choices never interpret or rewrite the strategy checkpoint.
+fn choices(input: &Invocation) -> R<PackageOutput> {
     let mut requests = Vec::new();
-    let mut view = if input.action == "instruments" {
+    let mut view = if input.action == "timeframes" {
+        json!({"title":"Choose timeframe","message":"All uses 1D, 4H, 1H, 30m, 15m and 5m. A managed order keeps its original plan.","options":["all","5m","1m"]})
+    } else if input.action == "instruments" {
         requests.push(json!({"kind":"api.describe","id":"instrument-api","continuation":"instruments_capabilities"}));
         json!({"title":"Choose instrument","message":"Checking the common response capabilities"})
     } else if input.action == "instruments_capabilities" {
@@ -1551,9 +1568,15 @@ pub(super) fn evaluate_json(raw: &[u8]) -> Vec<u8> {
         let action = input.action.as_str();
         if matches!(
             action,
-            "instruments" | "instruments_capabilities" | "instruments_result"
+            "timeframes" | "instruments" | "instruments_capabilities" | "instruments_result"
         ) {
-            return instrument_choices(&input);
+            return choices(&input);
+        }
+        if matches!(
+            action,
+            "prepare_entry" | "place_entry" | "place_exit" | "cancel_entry"
+        ) {
+            return Err("Use Start Jack for automatic order management, or Stop new entries. Manual exchange actions remain available at the exchange.".into());
         }
         let mut c = match input.state {
             None => Checkpoint::default(),
@@ -1889,6 +1912,92 @@ mod tests {
             .unwrap()
             .contains("not migrated"));
     }
+
+    #[test]
+    fn public_trading_uses_one_start_stop_workflow_and_keeps_manual_commands_private() {
+        let now = 100_000_001;
+        let mut c = managed("open", 0.0);
+        let saved = serde_json::to_value(&c).unwrap();
+        let view = presentation(
+            &mut c,
+            &mut Work {
+                running: true,
+                ..Work::default()
+            },
+            now,
+        )
+        .unwrap();
+        let ids: Vec<_> = view["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["stop", "connect", "refresh_order", "list_orders"]);
+        assert_eq!(serde_json::to_value(&c).unwrap(), saved);
+        for action in ["prepare_entry", "place_entry", "place_exit", "cancel_entry"] {
+            let output = invoke(action, saved.clone(), Value::Null, Value::Null, now);
+            assert_eq!(output["status"], "rejected");
+            assert!(output["result"].is_null());
+        }
+        let stopped = invoke("stop", saved.clone(), Value::Null, Value::Null, now);
+        assert_eq!(stopped["status"], "executed", "{stopped}");
+        assert_eq!(stopped["result"]["state"]["engine"], saved["engine"]);
+        assert_eq!(stopped["result"]["state"]["new_entries"], false);
+        assert!(stopped["result"]["requests"].as_array().unwrap().is_empty());
+        let reopened = invoke(
+            "present",
+            stopped["result"]["state"].clone(),
+            Value::Null,
+            Value::Null,
+            now + 1,
+        );
+        assert_eq!(reopened["result"]["view"]["actions"][0]["id"], "start");
+        assert_eq!(
+            reopened["result"]["view"]["actions"][0]["host"],
+            "workspace.start"
+        );
+    }
+
+    #[test]
+    fn timeframe_chooser_uses_the_existing_choice_contract_without_reading_private_state() {
+        let private =
+            json!({"different_package_schema":"keep unchanged","pending":"not ours to interpret"});
+        let output = invoke(
+            "timeframes",
+            private.clone(),
+            Value::Null,
+            Value::Null,
+            100_000_001,
+        );
+        assert_eq!(output["status"], "executed", "{output}");
+        assert_eq!(output["result"]["state"], private);
+        assert_eq!(
+            output["result"]["view"]["options"],
+            json!(["all", "5m", "1m"])
+        );
+        assert!(output["result"]["requests"].as_array().unwrap().is_empty());
+        for key in ["fields", "actions", "columns", "rows"] {
+            assert!(output["result"]["view"][key].is_array());
+        }
+        let view = invoke(
+            "present",
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            100_000_001,
+        );
+        let field = view["result"]["view"]["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["id"] == "timeframes")
+            .unwrap();
+        assert_eq!(field["type"], "choice");
+        assert_eq!(field["source"]["action"], "timeframes");
+        assert_ne!(field["advanced"], true);
+    }
+
     #[test]
     fn raw_service_lifecycle_ignores_manual_orders_but_keeps_partial_exposure() {
         let c = managed("partial", 0.5);

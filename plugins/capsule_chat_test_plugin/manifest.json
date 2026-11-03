@@ -3,6 +3,7 @@
   "version": 1,
   "release_version": "0.2.2",
   "plugin_id": "hivra.contract.capsule-chat.v1",
+  "display_name": "Capsule Chat",
   "wasm_module": "hivra_capsule_chat_test_plugin.wasm",
   "capabilities": [
     "consensus_guard.read"

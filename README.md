@@ -113,6 +113,11 @@ publishing assets.
   Start permits bounded autonomous cycles; Stop new entries keeps observation
   and reducing management available. Full host revocation ends new dispatch,
   without cancelling existing exchange orders or closing positions.
+  The public workspace has one trading journey: connect, configure, Start/Stop
+  and observe. Preparation, placement and managed cancellation are private
+  cycle steps, not a second manual-entry interface. Timeframe selection uses
+  the same package choice contract as instrument selection, without a new host
+  operation or a stored option list.
   Pending identities survive ordinary restart; unknown delivery is reconciled
   by exact identity and never blindly resubmitted. Manual account orders are
   observed without being adopted or cancelled.
