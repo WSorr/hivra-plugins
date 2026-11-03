@@ -3,6 +3,7 @@
   "version": 1,
   "release_version": "0.8.2",
   "plugin_id": "hivra.contract.moltbook-ambassador.v1",
+  "display_name": "Moltbook Ambassador",
   "wasm_module": "hivra_moltbook_ambassador_draft_plugin.wasm",
   "capabilities": [
     "credentials.use",
