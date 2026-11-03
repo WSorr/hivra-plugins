@@ -86,9 +86,11 @@ python3 scripts/sign_catalog.py \
 The release sequence is intentionally staged: pull requests and `main` verify
 source, tests, canonical archive shape, and reproducibility without requiring
 the previous catalog digest. After the candidate is downloaded, bind and sign
-the catalog in the release PR. Only then create the matching `v*` tag; tagged
-CI requires the catalog release tag and every artifact digest to match before
-publishing assets.
+the catalog in the release branch. Create the matching `v*` tag on that verified
+commit; tagged CI requires the catalog release tag and every artifact digest to
+match before publishing assets. Verify the published downloads and compatible
+Capsule availability before merging the catalog into `main`, which Discovery
+reads directly. Until those files exist, keep the previous catalog live.
 
 ## Included plugins
 
