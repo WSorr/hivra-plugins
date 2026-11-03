@@ -94,12 +94,13 @@ reads directly. Until those files exist, keep the previous catalog live.
 
 ## Included plugins
 
-The next Discovery set is Capsule Chat 0.2.3, Moltbook Ambassador 0.8.2 and
-Jack Ventura 0.2.1. Jack requires the common host capabilities delivered in
-Capsule `v1.0.5-test3`; the published `v1.0.5-test2` does not provide the
+The published `v0.2.11-plugins` Discovery set is Capsule Chat 0.2.3,
+Moltbook Ambassador 0.8.2 and Jack Ventura 0.2.1. Update Capsule to
+`v1.0.5-test3`, then open Plugins → Discover plugins → Install.
+Jack requires its common host capabilities; `v1.0.5-test2` does not provide the
 projected HTTP response and execution budget required for its full instrument
-catalog. Publish the compatible Capsule before promoting this set in Discovery.
-Local ZIP installation is an acceptance path, not catalog publication.
+catalog. The signed catalog pins the verified canonical release packages.
+Local ZIP installation remains a development path.
 
 - `hivra.contract.capsule-chat.v1`
 - `hivra.contract.moltbook-ambassador.v1` (bounded observation and deterministic
