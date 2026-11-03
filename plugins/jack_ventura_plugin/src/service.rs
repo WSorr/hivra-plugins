@@ -70,6 +70,8 @@ struct Work {
     #[serde(default)]
     page: usize,
     #[serde(default)]
+    candle_wait: bool,
+    #[serde(default)]
     sequence: usize,
     #[serde(default)]
     autonomous: bool,
@@ -777,6 +779,12 @@ fn request_for(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Option<Value>> {
             j["intent"] = json!(entry_id(&j["plan"]));
         }
         if kind == "market.candles.read" {
+            if w.candle_wait {
+                w.candle_wait = false;
+                w.job = Some(j);
+                return Ok(Some(json!({"kind":"runtime.wait","id":"candle_wait",
+                    "continuation":"service_result","milliseconds":1200})));
+            }
             if !w.rows.is_empty() {
                 let count = 12.min(w.rows.len());
                 let page = w.rows.drain(..count).collect::<Vec<_>>();
@@ -807,9 +815,14 @@ fn request_for(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Option<Value>> {
                     w.job = Some(j);
                 }
                 let _ = span;
-                return Ok(Some(
-                    json!({"kind":"runtime.yield","id":"chunk","continuation":"service_result"}),
-                ));
+                // Pace the next HTTP page through the common wait primitive.
+                // Internal strategy chunks need no service throttle; reuse the
+                // final chunk continuation rather than adding one per page.
+                return Ok(Some(if w.rows.is_empty() {
+                    json!({"kind":"runtime.wait","id":"chunk","continuation":"service_result","milliseconds":1200})
+                } else {
+                    json!({"kind":"runtime.yield","id":"chunk","continuation":"service_result"})
+                }));
             }
             if j["stage"].is_null() {
                 j["stage"] = json!("quote");
@@ -955,7 +968,7 @@ fn request_for(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Option<Value>> {
 }
 
 fn receive(c: &mut Checkpoint, w: &mut Work, result: &Value, now: i64) -> R<()> {
-    if result["id"] == "chunk" {
+    if result["id"] == "chunk" || result["id"] == "candle_wait" {
         return Ok(());
     }
     let mut j = w.job.take().ok_or("No pending package continuation")?;
@@ -1005,6 +1018,7 @@ fn receive(c: &mut Checkpoint, w: &mut Work, result: &Value, now: i64) -> R<()> 
             j["first"] = json!((current - 600 * span).max(0));
             j["last"] = json!(current - span);
             j["stage"] = json!("history");
+            w.candle_wait = true;
         } else {
             let start = j["first"].as_i64().unwrap() + w.page as i64 * span;
             let expected = ((j["last"].as_i64().unwrap() - start) / span + 1).clamp(0, 24) as usize;
@@ -1721,6 +1735,36 @@ mod tests {
             receive(&mut c,&mut w,&json!({"outcome":"response","status":200,"body":json!({"code":0,"data":raw}).to_string()}),now).unwrap();
         }
         panic!("Unbounded observation")
+    }
+    #[test]
+    fn candle_reads_wait_without_replaying_or_consuming_the_pending_job() {
+        let now = 1_800_000_000_000_i64;
+        let mut c = Checkpoint::default();
+        let mut w = Work {
+            job: Some(json!({"kind":"market.candles.read","symbol":"ACH-USDT", "timeframe":"1m"})),
+            ..Work::default()
+        };
+        let quote = request_for(&mut c, &mut w, now).unwrap().unwrap();
+        assert_eq!(quote["kind"], "http.request");
+        receive(
+            &mut c,
+            &mut w,
+            &json!({"status":200,"outcome":"response",
+            "body":json!({"code":0,"data":[[now,100,101,99,100]]}).to_string()}),
+            now,
+        )
+        .unwrap();
+        let wait = request_for(&mut c, &mut w, now).unwrap().unwrap();
+        assert_eq!(wait["kind"], "runtime.wait");
+        assert_eq!(wait["milliseconds"], 1200);
+        let context = serde_json::to_value(&w).unwrap();
+        let mut w: Work = serde_json::from_value(context.clone()).unwrap();
+        receive(&mut c, &mut w, &json!({"id":"candle_wait"}), now + 1200).unwrap();
+        assert_eq!(serde_json::to_value(&w).unwrap(), context);
+        let history = request_for(&mut c, &mut w, now + 1200).unwrap().unwrap();
+        assert_eq!(history["kind"], "http.request");
+        assert_ne!(history["id"], quote["id"]);
+        assert!(history["url"].as_str().unwrap().contains("startTime="));
     }
     #[test]
     fn market_http_pages_exclude_end_time_and_keep_strict_gap_checks() {
