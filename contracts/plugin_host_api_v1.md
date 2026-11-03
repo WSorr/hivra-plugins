@@ -9,6 +9,13 @@ stable package-facing rules so plugin releases can be versioned independently.
 Contract design/profile baseline is defined in:
 - `contracts/hivra_contract_profile_v1.md`
 
+Packages discover optional technical HTTP response selection through
+`api.describe` (`http.request.response_json_paths`). When required, check for
+support and the advertised `max_response_json_source_bytes` before requesting
+a larger source. Only the selected bounded result reaches WASM; no response
+cache is created. Detailed path semantics and
+bounds are owned by the canonical runtime contract linked above.
+
 ## Scope
 
 - External packages execute as bounded WASM through `wasmi_v1`.

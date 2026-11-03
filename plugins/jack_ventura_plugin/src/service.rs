@@ -18,6 +18,13 @@ const CANDLES: &str = "/openApi/swap/v3/quote/klines";
 type R<T> = Result<T, String>;
 
 #[derive(Serialize, Deserialize)]
+struct StopCoverage {
+    summary: String,
+    details: String,
+    trigger: Option<f64>,
+}
+
+#[derive(Serialize, Deserialize)]
 struct Checkpoint {
     version: u32,
     engine: State,
@@ -57,6 +64,9 @@ struct Work {
     account: Value,
     #[serde(default)]
     lifecycle: Value,
+    // Service observation for this action only; never part of the checkpoint.
+    #[serde(default)]
+    protection: Option<(PositionObservation, i64, StopCoverage)>,
     #[serde(default)]
     page: usize,
     #[serde(default)]
@@ -65,6 +75,8 @@ struct Work {
     autonomous: bool,
     #[serde(default)]
     running: bool,
+    #[serde(default)]
+    orders_view: bool,
 }
 
 fn hash(value: &Value) -> String {
@@ -145,11 +157,14 @@ fn entry_id(p: &Value) -> String {
     ]))
 }
 
+pub(super) fn market_access() -> Value {
+    json!({"version":2,"network":[{"origin":ORIGIN,"methods":["GET"],"credential":null}],"credentials":{}})
+}
 fn access(write: bool) -> Value {
-    json!({"version":2,"network":[
-        {"origin":ORIGIN,"methods":["GET"],"credential":null},
-        {"origin":ORIGIN,"methods":if write {json!(["GET","POST","DELETE"])} else {json!(["GET"])},"credential":"default"}],
-        "credentials":{"default":[{"id":"api_key","label":"API key"},{"id":"secret_key","label":"Secret key"}]}})
+    let mut access = market_access();
+    access["network"].as_array_mut().unwrap().push(json!({"origin":ORIGIN,"methods":if write {json!(["GET","POST","DELETE"])} else {json!(["GET"])},"credential":"default"}));
+    access["credentials"] = json!({"default":[{"id":"api_key","label":"API key"},{"id":"secret_key","label":"Secret key"}]});
+    access
 }
 fn uri(path: &str, params: &BTreeMap<String, String>) -> String {
     fn encode(s: &str) -> String {
@@ -258,6 +273,7 @@ fn engine(
     if let Some(resume) = output.resume_action {
         w.resume = Some(resume.into());
     }
+    w.orders_view = matches!(&output.view, WorkspaceView::Orders(_));
     let view = match output.view {
         WorkspaceView::Trading(view) => view,
         WorkspaceView::Orders(view) => serde_json::to_value(view).unwrap(),
@@ -289,26 +305,245 @@ fn presentation(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Value> {
     };
     view["access"] = access(true);
     view["confirmation"] = Value::Null;
-    if let Some(field) = view["fields"].as_array_mut().and_then(|f| f.first_mut()) {
-        field["type"] = json!("text");
-        field.as_object_mut().unwrap().remove("source");
-    }
-    if let Some(actions) = view["actions"].as_array_mut() {
-        for action in actions {
-            if action["host"] == "bingx.account.connect" {
-                action["host"] = json!("workspace.authorize");
-            } else if action["host"] == "bingx.order.submit" {
-                action.as_object_mut().unwrap().remove("host");
-            } else if action["host"] == "workspace.stop" {
-                action.as_object_mut().unwrap().remove("host");
-            }
-        }
-    }
     if c.engine.account.is_some() {
         view["schedule"] = json!({"version":2,"action":"cycle","interval_seconds":60,"access":access(true),
             "description":format!("Run Jack Ventura for {}. Package settings: margin {} USDT, requested stop {}%. Permit reading the account, placing and cancelling managed orders and reducing exits. The package enforces these settings; network permission is not a host financial-loss guarantee. Existing exchange orders remain after revocation.", c.engine.settings.symbol, c.engine.settings.entry_margin,c.engine.settings.stop_percent)});
     }
+    if w.orders_view {
+        return Ok(view);
+    }
+    let evidence = view["message"].as_str().unwrap_or("").to_owned();
+    let protection = c
+        .engine
+        .entry
+        .as_ref()
+        .and_then(|e| e.position.as_ref())
+        .and_then(|position| {
+            w.protection
+                .as_ref()
+                .filter(|(seen, at, _)| {
+                    seen.position_id == position.position_id
+                        && seen.side == position.side
+                        && seen.quantity == position.quantity
+                        && seen.average_price == position.average_price
+                        && *at <= now
+                        && now - *at <= 60_000
+                })
+                .map(|(_, _, observation)| observation)
+        });
+    let mut message = if let Some(entry) = c.engine.entry.as_ref() {
+        if !entry.attempted {
+            format!("Entry prepared · {} {} at {}\nNot sent. Market and account evidence are checked before dispatch.", entry.plan.side.to_uppercase(), entry.plan.quantity, entry.plan.price)
+        } else if let Some(position) = entry.position.as_ref() {
+            format!(
+                "{} · {} {} {}\nAverage fill {}",
+                if protection.is_some() {
+                    "Position observed"
+                } else {
+                    "Saved position — refresh required"
+                },
+                position.side.to_uppercase(),
+                position.quantity,
+                entry.plan.symbol,
+                position.average_price
+            )
+        } else if let Some(receipt) = entry.evidence.as_ref() {
+            format!(
+                "Entry {} · {} at {}\nFilled {} of {}. Refresh to observe the current position.",
+                receipt.status,
+                entry.plan.symbol,
+                entry.plan.price,
+                receipt.filled_quantity,
+                entry.plan.quantity
+            )
+        } else {
+            "Entry outcome unknown\nRefresh its exact identity; no repeat order is sent blindly."
+                .into()
+        }
+    } else if c.engine.account.is_none() {
+        "Connect an account to trade\nChoose your instrument, entry margin and stop budget before Start.".into()
+    } else if c.engine.retired_before_ms > 0 {
+        "Previous position/order is no longer active\nClosure reason and PnL are not inferred from a flat position.".into()
+    } else {
+        "Ready to observe the market\nStart enables new entries within your saved settings and permissions.".into()
+    };
+    let mut stop_details = String::new();
+    if let Some(position) = c.engine.entry.as_ref().and_then(|e| e.position.as_ref()) {
+        message.push_str(&format!(
+            "\nStop protection: {}",
+            protection
+                .map(|p| p.summary.as_str())
+                .unwrap_or("Unverified — refresh the position and its stop orders.")
+        ));
+        if let Some(p) = protection {
+            stop_details = p.details.clone();
+            if let (Some(trigger), Some((target, _, _))) =
+                (p.trigger, position_stop(&c.engine, position))
+            {
+                if (position.side == "long" && trigger < target)
+                    || (position.side == "short" && trigger > target)
+                {
+                    message.push_str("\nStop trigger is beyond the fill-based budget estimate.");
+                }
+            }
+        }
+        message.push_str(
+            &match c.engine.entry.as_ref().and_then(|e| e.profit_exit.as_ref()) {
+                Some(exit) => format!(
+                    "\nProfit exit: {} at {} · {} / {} filled",
+                    exit.evidence.as_ref().map(|e| e.status.as_str()).unwrap_or(
+                        if exit.attempted {
+                            "unverified"
+                        } else {
+                            "not sent"
+                        }
+                    ),
+                    exit.plan.price,
+                    exit.evidence
+                        .as_ref()
+                        .map(|e| e.filled_quantity)
+                        .unwrap_or(0.0),
+                    exit.plan.quantity
+                ),
+                None => "\nProfit exit: no confirmed target yet.".into(),
+            },
+        );
+    }
+    if !c.new_entries {
+        message
+            .push_str("\nNew entries off. Existing orders and positions remain at the exchange.");
+    }
+    view["message"] = json!(message);
+    view["summary"] = json!(format!(
+        "BingX · LIVE · {}\n{} · Entry margin {} USDT · Stop budget {}% of margin",
+        c.engine.settings.symbol,
+        c.engine
+            .account
+            .as_ref()
+            .map(|a| a.account_label.as_str())
+            .unwrap_or("Account not connected"),
+        c.engine.settings.entry_margin,
+        c.engine.settings.stop_percent
+    ));
+    view["details"] = json!(format!(
+        "{}\n\n{}\n{}",
+        view["details"].as_str().unwrap_or(""),
+        evidence,
+        stop_details
+    ));
+    view["details_title"] = json!("Orders and calculation evidence");
+    if let Some(actions) = view["actions"].as_array_mut() {
+        actions.sort_by_key(|a| match a["id"].as_str().unwrap_or("") {
+            "stop" | "refresh_order" => 0,
+            "start" => 1,
+            "connect" if c.engine.account.is_none() => 0,
+            "connect" => 3,
+            _ => 2,
+        });
+        for action in actions {
+            action["label"] = match action["id"].as_str() {
+                Some("refresh_order") => json!(if c
+                    .engine
+                    .entry
+                    .as_ref()
+                    .is_some_and(|e| e.position.is_some())
+                {
+                    "Refresh position"
+                } else {
+                    "Refresh order"
+                }),
+                Some("list_orders") => json!("Open orders"),
+                Some("inspect") => json!("Refresh market"),
+                Some("start") => json!("Start Jack"),
+                _ => action["label"].clone(),
+            };
+        }
+    }
     Ok(view)
+}
+
+fn stop_coverage(raw: &Value, position: &PositionObservation) -> R<StopCoverage> {
+    let rows = raw
+        .get("orders")
+        .unwrap_or(raw)
+        .as_array()
+        .ok_or("Invalid stop-order observation")?;
+    let mut stops = Vec::new();
+    let mut ids = std::collections::BTreeSet::new();
+    for r in rows {
+        let side = if position.side == "long" {
+            "SELL"
+        } else {
+            "BUY"
+        };
+        let hedge_side = if position.side == "long" {
+            "LONG"
+        } else {
+            "SHORT"
+        };
+        let flag = |field: &str| r[field] == true || r[field] == "true";
+        if r["type"] != "STOP_MARKET"
+            || ![json!("NEW"), json!("PENDING")].contains(&r["status"])
+            || r["side"] != side
+            || !(r["positionSide"] == hedge_side
+                || (r["positionSide"] == "BOTH" && (flag("reduceOnly") || flag("closePosition"))))
+        {
+            continue;
+        }
+        if let Some(id) = r.get("positionId").or_else(|| r.get("positionID")) {
+            if text(id)? != position.position_id {
+                continue;
+            }
+        }
+        let id = text(r.get("orderID").unwrap_or(&r["orderId"]))?;
+        if id.len() > 30 || !id.bytes().all(|b| b.is_ascii_digit()) || !ids.insert(id.clone()) {
+            return Err("Ambiguous stop-order identity".into());
+        }
+        let trigger = number(&r["stopPrice"])?;
+        let source = text(&r["workingType"])?;
+        if trigger <= 0.0
+            || !["MARK_PRICE", "CONTRACT_PRICE", "INDEX_PRICE"].contains(&source.as_str())
+        {
+            return Err("Stop trigger is unavailable".into());
+        }
+        let quantity = if flag("closePosition") {
+            position.quantity
+        } else {
+            let original = number(&r["origQty"])?;
+            let filled = number(&r["executedQty"])?;
+            if filled > original {
+                return Err("Invalid stop remaining quantity".into());
+            }
+            original - filled
+        };
+        stops.push((
+            quantity,
+            format!("order {id}: trigger {trigger} ({source}), remaining {quantity}"),
+            trigger,
+        ));
+    }
+    if stops.is_empty() {
+        return Ok(StopCoverage {
+            summary: "No matching active STOP_MARKET confirmed".into(),
+            details: "A requested stop or a stop-limit is not verified market-stop coverage."
+                .into(),
+            trigger: None,
+        });
+    }
+    let coverage = if stops.len() > 1 {
+        "Multiple matching stops — review possible duplicates; quantities are not added"
+    } else if stops[0].0 == 0.0 {
+        "No observed quantity covered"
+    } else if stops[0].0 >= position.quantity {
+        "Full observed quantity covered"
+    } else {
+        "Partial observed quantity covered"
+    };
+    Ok(StopCoverage {
+        summary: if stops.len() == 1 { format!("{coverage} · Trigger {} · Qty {}", stops[0].2, stops[0].0) } else { coverage.into() },
+        details: format!("Position {} ({}). {}. Observation only; trigger acceptance does not guarantee execution price or a maximum loss.", position.position_id, position.quantity, stops.iter().take(4).map(|(_, text, _)| text.as_str()).collect::<Vec<_>>().join("; ")),
+        trigger: if stops.len() == 1 { Some(stops[0].2) } else { None },
+    })
 }
 
 fn data(result: &Value) -> R<Value> {
@@ -932,6 +1167,7 @@ fn receive(c: &mut Checkpoint, w: &mut Work, result: &Value, now: i64) -> R<()> 
         }
         "positions" => {
             let p = positions(&raw, &symbol)?;
+            j["positions_observed_at_ms"] = json!(now);
             if kind == "order.entry.place" {
                 if !p.as_array().unwrap().is_empty() {
                     return Err("Current position exists; no new entry sent".into());
@@ -1001,6 +1237,34 @@ fn receive(c: &mut Checkpoint, w: &mut Work, result: &Value, now: i64) -> R<()> 
                         now,
                     )?;
                     return Ok(());
+                }
+                // A unique current service position may be observed without
+                // adopting it. Presentation additionally requires the strategy's
+                // exact managed-fill match after lifecycle reconciliation.
+                w.protection = None;
+                if let Some(rows) = w.lifecycle["positions"].as_array() {
+                    if let [position] = rows.as_slice() {
+                        let position: PositionObservation =
+                            serde_json::from_value(position.clone())
+                                .map_err(|_| "Invalid protection position")?;
+                        let scoped = raw
+                            .get("orders")
+                            .unwrap_or(&raw)
+                            .as_array()
+                            .ok_or("Invalid open orders")?
+                            .iter()
+                            .filter(|r| r["symbol"] == symbol)
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        let at = j["positions_observed_at_ms"]
+                            .as_i64()
+                            .ok_or("Missing position observation time")?;
+                        w.protection = Some((
+                            position.clone(),
+                            at,
+                            stop_coverage(&json!(scoped), &position)?,
+                        ));
+                    }
                 }
                 w.lifecycle["orders"] = orders;
                 if j["exit_plan"].is_object() {
@@ -1136,6 +1400,93 @@ struct PackageEnvelope {
     error_message: Option<String>,
 }
 
+// A choice reads the public service catalog, never the strategy checkpoint.
+// Preserve the opaque strategy checkpoint while this independent read runs.
+fn instrument_choices(input: &Invocation) -> R<PackageOutput> {
+    let mut requests = Vec::new();
+    let view = if input.action == "instruments" {
+        requests.push(json!({"kind":"api.describe","id":"instrument-api","continuation":"instruments_capabilities"}));
+        json!({"title":"Choose instrument","message":"Checking the common response capabilities"})
+    } else if input.action == "instruments_capabilities" {
+        let catalog = input
+            .result
+            .as_ref()
+            .map(|r| &r["catalog"])
+            .ok_or("Common HTTP capabilities unavailable")?;
+        let optional = catalog["http.request"]["optional"]
+            .as_array()
+            .ok_or("Common HTTP capabilities unavailable")?;
+        if !optional.contains(&json!("response_json_paths")) {
+            return Err("Update Capsule to load the complete instrument list; this host lacks bounded JSON response selection".into());
+        }
+        if catalog["http.request"]["max_response_json_source_bytes"]
+            .as_u64()
+            .unwrap_or(0)
+            < 1024 * 1024
+        {
+            return Err("Update Capsule to load the complete contract catalog; the common HTTP source bound is too small".into());
+        }
+        requests.push(json!({"kind":"http.request","id":"instruments","continuation":"instruments_result",
+            "url":format!("{ORIGIN}{CONTRACT}"),"method":"GET","max_response_bytes":1024*1024,
+            "response_json_paths":{"code":["code"],"symbols":["data","*","symbol"],"statuses":["data","*","status"],"open":["data","*","apiStateOpen"]}}));
+        json!({"title":"Choose instrument","message":"Loading current available contracts"})
+    } else {
+        let response = input.result.as_ref().ok_or("Missing instrument result")?;
+        if response["outcome"] != "response" || response["status"] != 200 {
+            return Err("Instrument list unavailable; retry the service read".into());
+        }
+        let contracts = &response["json"];
+        let names = contracts["symbols"]
+            .as_array()
+            .ok_or("Missing contract symbols")?;
+        let statuses = contracts["statuses"]
+            .as_array()
+            .ok_or("Missing contract statuses")?;
+        let open = contracts["open"]
+            .as_array()
+            .ok_or("Missing contract API availability")?;
+        if contracts["code"] != 0
+            || names.len() > 4096
+            || names.len() != statuses.len()
+            || names.len() != open.len()
+        {
+            return Err("Instrument list unavailable or exceeds package bounds".into());
+        }
+        let mut symbols: Vec<&str> = names
+            .iter()
+            .zip(statuses)
+            .zip(open)
+            .filter_map(|((name, status), open)| {
+                let s = name.as_str()?;
+                (*status == 1
+                    && open == "true"
+                    && s.len() > 5
+                    && s.len() <= 64
+                    && s.ends_with("-USDT")
+                    && s[..s.len() - 5]
+                        .bytes()
+                        .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()))
+                .then_some(s)
+            })
+            .collect();
+        symbols.sort_unstable();
+        symbols.dedup();
+        if symbols.is_empty() {
+            return Err("No USDT contracts currently open for API entry".into());
+        }
+        json!({"title":"Choose instrument","options":symbols,"message":"Active USDT contracts open for API entry. Availability is checked again before entry."})
+    };
+    Ok(PackageOutput {
+        state: input
+            .state
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| serde_json::value::to_raw_value(&Checkpoint::default()).unwrap()),
+        context: serde_json::value::to_raw_value(&Value::Null).unwrap(),
+        view,
+        requests,
+    })
+}
+
 pub(super) fn evaluate_json(raw: &[u8]) -> Vec<u8> {
     fn run(raw: &[u8]) -> R<PackageOutput> {
         if raw.len() > INPUT_LIMIT {
@@ -1155,6 +1506,12 @@ pub(super) fn evaluate_json(raw: &[u8]) -> Vec<u8> {
             return Err("Invalid observation time".into());
         }
         let action = input.action.as_str();
+        if matches!(
+            action,
+            "instruments" | "instruments_capabilities" | "instruments_result"
+        ) {
+            return instrument_choices(&input);
+        }
         let mut c = match input.state {
             None => Checkpoint::default(),
             Some(raw) => serde_json::from_str::<Checkpoint>(raw.get()).map_err(|_| "This package starts a new workspace session. Old local test checkpoints are not migrated; remove the package with saved-data deletion, then reinstall for a fresh session.")?,
@@ -1532,5 +1889,262 @@ mod tests {
         }
         assert!(data(&json!({"outcome":"unknown","body":"{}"})).is_err());
         assert!(bars(&json!([[0, 1, 2]])).is_err());
+    }
+
+    fn protected_position() -> PositionObservation {
+        PositionObservation {
+            position_id: "456".into(),
+            side: "long".into(),
+            quantity: 1.0,
+            average_price: 96.5,
+        }
+    }
+
+    fn stop() -> Value {
+        json!({"symbol":"BTC-USDT","orderId":"789","side":"SELL","positionSide":"LONG",
+            "type":"STOP_MARKET","status":"NEW","price":"0","stopPrice":"95.5","workingType":"CONTRACT_PRICE",
+            "origQty":"1","executedQty":"0","reduceOnly":true})
+    }
+
+    #[test]
+    fn stop_observation_distinguishes_quantity_scope_and_trigger_without_effects() {
+        let p = protected_position();
+        assert!(stop_coverage(&json!([stop()]), &p)
+            .unwrap()
+            .summary
+            .contains("Full observed quantity"));
+        let mut partial = stop();
+        partial["origQty"] = json!("0.5");
+        assert!(stop_coverage(&json!([partial]), &p)
+            .unwrap()
+            .summary
+            .contains("Partial observed quantity"));
+        let mut close = stop();
+        close["closePosition"] = json!("true");
+        close["origQty"] = json!("0.1");
+        assert!(stop_coverage(&json!([close]), &p)
+            .unwrap()
+            .summary
+            .contains("Full observed quantity"));
+        let mut both = stop();
+        both["positionSide"] = json!("BOTH");
+        both["reduceOnly"] = json!(false);
+        assert!(stop_coverage(&json!([both]), &p)
+            .unwrap()
+            .summary
+            .starts_with("No matching"));
+        for (field, value) in [
+            ("side", json!("BUY")),
+            ("positionSide", json!("SHORT")),
+            ("positionId", json!("999")),
+            ("type", json!("STOP")),
+            ("type", json!("TAKE_PROFIT_MARKET")),
+            ("status", json!("CANCELED")),
+            ("status", json!("FILLED")),
+        ] {
+            let mut wrong = stop();
+            wrong[field] = value;
+            assert!(
+                stop_coverage(&json!([wrong]), &p)
+                    .unwrap()
+                    .summary
+                    .starts_with("No matching"),
+                "{field}"
+            );
+        }
+        let mut short = protected_position();
+        short.side = "short".into();
+        let mut short_stop = stop();
+        short_stop["side"] = json!("BUY");
+        short_stop["positionSide"] = json!("SHORT");
+        short_stop["stopPrice"] = json!("98");
+        short_stop["workingType"] = json!("MARK_PRICE");
+        let text = stop_coverage(&json!([short_stop]), &short).unwrap();
+        assert!(
+            text.summary.contains("Full observed quantity")
+                && text.details.contains("98 (MARK_PRICE)")
+        );
+        let mut duplicate = stop();
+        duplicate["orderId"] = json!("790");
+        assert!(stop_coverage(&json!([stop(), duplicate]), &p)
+            .unwrap()
+            .summary
+            .starts_with("Multiple matching"));
+        assert!(stop_coverage(&json!([stop(), stop()]), &p).is_err());
+        let mut malformed = stop();
+        malformed["stopPrice"] = json!("NaN");
+        assert!(stop_coverage(&json!([malformed]), &p).is_err());
+    }
+
+    #[test]
+    fn lifecycle_stop_display_is_transient_and_expires_without_authorizing_a_mutation() {
+        let now = 100_000_001;
+        let mut c = managed("filled", 1.0);
+        let plan = e(&c)["entry"]["plan"].clone();
+        let quantity = number(&plan["quantity"]).unwrap();
+        let mut p = protected_position();
+        p.quantity = quantity;
+        let mut current_stop = stop();
+        current_stop["origQty"] = json!(quantity);
+        let mut w = Work {
+            job: Some(
+                json!({"kind":"order.snapshot.read","scope":"lifecycle","stage":"open",
+            "plan":plan,"positions_observed_at_ms":now}),
+            ),
+            lifecycle: json!({"account_id":c.engine.account.as_ref().unwrap().account_id,"symbol":"BTC-USDT",
+                "entry":c.engine.entry.as_ref().unwrap().evidence,"positions":[p]}),
+            ..Work::default()
+        };
+        receive(
+            &mut c,
+            &mut w,
+            &json!({"outcome":"response","status":200,
+            "body":json!({"code":0,"data":{"orders":[current_stop]}}).to_string()}),
+            now,
+        )
+        .unwrap();
+        assert!(w.queue.is_empty() && c.intents.is_empty());
+        let message = presentation(&mut c, &mut w, now).unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(
+            message.contains("Full observed quantity")
+                && presentation(&mut c, &mut w, now).unwrap()["details"]
+                    .as_str()
+                    .unwrap()
+                    .contains("order 789"),
+            "{message}"
+        );
+        let state = serde_json::to_value(&c).unwrap();
+        assert!(message.contains("beyond the fill-based budget estimate"));
+        assert!(!state.to_string().contains("protection") && !state.to_string().contains("789"));
+        let resumed: Work = serde_json::from_value(serde_json::to_value(&w).unwrap()).unwrap();
+        assert!(resumed.protection.is_some()); // Same action across bounded continuations.
+        w.protection.as_mut().unwrap().0.position_id = "999".into();
+        assert!(presentation(&mut c, &mut w, now).unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .contains("Stop protection: Unverified"));
+        w.protection.as_mut().unwrap().0.position_id = "456".into();
+        let mut failed = serde_json::to_value(&w).unwrap();
+        failed["job"] =
+            json!({"kind":"order.snapshot.read","scope":"lifecycle","stage":"uid","plan":plan});
+        let lost = invoke(
+            "service_result",
+            state.clone(),
+            failed,
+            json!({"outcome":"unknown"}),
+            now,
+        );
+        assert_eq!(lost["status"], "executed", "{lost}");
+        assert!(lost["result"]["view"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Stop protection: Unverified"));
+        assert!(lost["result"]["requests"].as_array().unwrap().is_empty());
+        let stale = presentation(&mut c, &mut w, now + 60_001).unwrap();
+        assert!(stale["message"]
+            .as_str()
+            .unwrap()
+            .contains("Stop protection: Unverified"));
+        let reopened = invoke("present", state, Value::Null, Value::Null, now + 1);
+        assert_eq!(reopened["status"], "executed", "{reopened}");
+        assert!(reopened["result"]["view"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Stop protection: Unverified"));
+        assert!(reopened["result"]["requests"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn open_orders_keep_their_own_observation_view_beside_a_managed_entry() {
+        let mut c = managed("filled", 1.0);
+        let account = c.engine.account.as_ref().unwrap().account_id.clone();
+        let mut w = Work {
+            verified: Some(account),
+            job: Some(
+                json!({"kind":"order.snapshot.read","scope":"open","stage":"open","symbol":"BTC-USDT"}),
+            ),
+            ..Work::default()
+        };
+        receive(&mut c, &mut w, &json!({"outcome":"response","status":200,"body":json!({"code":0,"data":{"orders":[stop()]}}).to_string()}), 100_000_001).unwrap();
+        let view = presentation(&mut c, &mut w, 100_000_001).unwrap();
+        assert!(view["message"]
+            .as_str()
+            .unwrap()
+            .contains("1 open orders returned"));
+        assert_eq!(view["details_title"], "Open orders");
+        assert_eq!(view["rows"][0][0], "789");
+        assert!(c.intents.is_empty() && w.queue.is_empty());
+    }
+    #[test]
+    fn public_instrument_selection_preserves_opaque_state_and_requires_the_common_ability() {
+        let now = 100_000_001;
+        let state = json!({"private_shape":"replacement","unresolved_delivery":"keep"});
+        let start = invoke("instruments", state.clone(), Value::Null, Value::Null, now);
+        assert_eq!(start["result"]["state"], state);
+        assert_eq!(start["result"]["requests"][0]["kind"], "api.describe");
+        let old = invoke(
+            "instruments_capabilities",
+            state.clone(),
+            Value::Null,
+            json!({"catalog":{"http.request":{"optional":["max_response_bytes"]}}}),
+            now,
+        );
+        assert_eq!(old["status"], "rejected");
+        assert!(old["error_message"]
+            .as_str()
+            .unwrap()
+            .contains("Update Capsule"));
+        let available = invoke(
+            "instruments_capabilities",
+            state.clone(),
+            Value::Null,
+            json!({"catalog":{"http.request":{"optional":["response_json_paths"],"max_response_json_source_bytes":1048576}}}),
+            now,
+        );
+        assert_eq!(available["result"]["state"], state);
+        let request = &available["result"]["requests"][0];
+        assert_eq!(request["method"], "GET");
+        assert!(request.get("credential").is_none());
+        assert_eq!(
+            request["response_json_paths"]["symbols"],
+            json!(["data", "*", "symbol"])
+        );
+        for symbol in ["ACH-USDT", "NEW-USDT"] {
+            let result = json!({"outcome":"response","status":200,"json":json!({"code":0,"symbols":[symbol,"BTC-USDT",symbol,"BTC-USDC","invalid-USDT","CLOSED-USDT","INACTIVE-USDT"],"statuses":[1,1,1,1,1,1,25],"open":["true","true","true","true","true","false","true"]})});
+            let options = invoke(
+                "instruments_result",
+                state.clone(),
+                Value::Null,
+                result,
+                now,
+            );
+            let mut expected = vec![symbol, "BTC-USDT"];
+            expected.sort();
+            assert_eq!(options["result"]["view"]["options"], json!(expected));
+            assert_eq!(options["result"]["state"], state);
+            assert!(options["result"]["requests"].as_array().unwrap().is_empty());
+        }
+        for result in [
+            json!({"outcome":"unknown"}),
+            json!({"outcome":"response","status":200,"json":json!({"code":0,"symbols":["BTC-USDT"],"statuses":[],"open":["true"]})}),
+            json!({"outcome":"response","status":200,"body":"{bad"}),
+            json!({"outcome":"response","status":200,"body":"{\"code\":17,\"symbols\":[\"BTC-USDT\"]}"}),
+        ] {
+            let failed = invoke(
+                "instruments_result",
+                state.clone(),
+                Value::Null,
+                result,
+                now,
+            );
+            assert_eq!(failed["status"], "rejected");
+            assert!(failed["result"].is_null());
+        }
     }
 }
