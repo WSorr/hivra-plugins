@@ -90,11 +90,19 @@ the catalog in the release PR. Only then create the matching `v*` tag; tagged
 CI requires the catalog release tag and every artifact digest to match before
 publishing assets.
 
-## Included test plugin scaffolds
+## Included plugins
+
+The next Discovery set is Capsule Chat 0.2.3, Moltbook Ambassador 0.8.2 and
+Jack Ventura 0.2.1. Jack requires the common host capabilities delivered in
+Capsule `v1.0.5-test3`; the published `v1.0.5-test2` does not provide the
+projected HTTP response and execution budget required for its full instrument
+catalog. Publish the compatible Capsule before promoting this set in Discovery.
+Local ZIP installation is an acceptance path, not catalog publication.
 
 - `hivra.contract.capsule-chat.v1`
 - `hivra.contract.moltbook-ambassador.v1` (bounded observation and deterministic
-  assisted post/reply preparation; network effects remain host-owned)
+  assisted post/reply preparation; the package owns its service protocol and
+  workflow, and the host executes requests within the owner's grants)
 - `hivra.contract.jack-ventura.v1`: JackV `3b81753` line formation and a
   package-owned workspace through common API v2. The package owns service
   requests, account binding, entry/exit planning, response parsing and recovery;
