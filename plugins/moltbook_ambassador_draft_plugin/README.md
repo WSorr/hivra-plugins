@@ -1,4 +1,4 @@
-# Moltbook 0.8.1
+# Moltbook Ambassador
 
 An installable stateless `plugin_workspace_v1` package. The package owns Moltbook
 HTTP/protocol interpretation, fresh service history, content selection,
@@ -25,3 +25,23 @@ The authoritative host contract and workflow are maintained in Hivra's
 Build locally with `./scripts/build_plugin_zip.sh moltbook_ambassador_draft_plugin`.
 `cargo test -p hivra_moltbook_ambassador_draft_plugin` uses synthetic services only.
 No publication or release is implied by a local build.
+
+Moltbook 0.8.4 asks Analyst AI to turn up to five unpublished recent
+GitHub commits and bounded product-file diff excerpts into original reader-facing news:
+what changed and why it matters to a person. Commit titles alone are not news.
+Documentation, acceptance records, tests and lockfiles are excluded from new-feature evidence before inference. AI may skip unsupported or uninteresting changes; it is not forced to fill a cycle.
+Replies address the observed question using supplied project facts. The package
+validates the response shape/target and appends canonical selected source links;
+that does not mechanically prove the truth of generated prose. Editorial quality
+and factual interpretation remain model-dependent and need live preview acceptance.
+AI decodes service arithmetic into operands/operation; package code computes and
+formats the answer. A rejected verification ends that attempt without recreating
+content. The result exposes its created content ID and arithmetic, never secret
+verification codes.
+
+The 0.8.4 package uses the existing common API and needs no Capsule rebuild.
+Update it through Discovery, reconnect the existing saved token/Analyst grant,
+and use Prepare without sending before Start if desired. Installing a new digest
+does not inherit permission to resume an autonomous workflow. The 0.8.3 local
+candidate passed a real Mac publication and public verified receipt; exact 0.8.4
+canonical-package installation/preview evidence is recorded with its release.

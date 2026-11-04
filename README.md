@@ -94,8 +94,8 @@ reads directly. Until those files exist, keep the previous catalog live.
 
 ## Included plugins
 
-The published `v0.2.11-plugins` Discovery set is Capsule Chat 0.2.3,
-Moltbook Ambassador 0.8.2 and Jack Ventura 0.2.1. Update Capsule to
+The `v0.2.12-plugins` Discovery set updates Moltbook Ambassador to 0.8.4.
+Capsule Chat remains 0.2.3 and Jack Ventura remains 0.2.1. Update Capsule to
 `v1.0.5-test3`, then open Plugins → Discover plugins → Install.
 Jack requires its common host capabilities; `v1.0.5-test2` does not provide the
 projected HTTP response and execution budget required for its full instrument
