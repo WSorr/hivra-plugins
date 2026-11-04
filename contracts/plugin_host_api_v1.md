@@ -50,7 +50,7 @@ pending intent belongs to the package and may use its optional opaque store. Rev
 external service's already admitted request.
 
 Old named workspace requests are rejected. Old local Jack test-session journals
-are not imported in this pass; the owner excluded that migration. Jack 0.2.0
+are not imported in this pass; the owner excluded that migration. The protocol-2 Jack replacement
 requires a new workspace session (normal reinstall for an old local test
 workspace with explicit saved-data deletion), and rejects an incompatible
 checkpoint without overwriting it. Normal workspace uninstall retains opaque
@@ -63,7 +63,7 @@ This does not remove restart recovery for new protocol-2 attempts.
 
 - `hivra.contract.capsule-chat.v1`
   - method: `post_capsule_chat_message`
-- Moltbook 0.8.0 uses `plugin_workspace_v1`, no storage capability, and no named
+- Moltbook uses `plugin_workspace_v1`, no storage capability, and no named
   service methods; history is read from the service on every start.
 - `plugin_workspace_v1`
   - bounded package-owned workspace state and host-mediated requests
@@ -78,7 +78,8 @@ This does not remove restart recovery for new protocol-2 attempts.
   "args": {
     "peer_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "client_message_id": "msg-1",
-    "message_text": "hello"
+    "message_text": "hello",
+    "created_at_utc": "2026-11-03T00:00:00Z"
   }
 }
 ```

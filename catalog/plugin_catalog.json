@@ -10,17 +10,17 @@
       "display_name": "Capsule Chat",
       "version": "0.2.3",
       "package_kind": "zip",
-      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.11-plugins/capsule_chat_test_plugin-0.2.3.zip",
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.12-plugins/capsule_chat_test_plugin-0.2.3.zip",
       "sha256_hex": "72b06bf290536c85b2a57fc17bfe64099e7907c9620cc68a755796abc530225f"
     },
     {
       "id": "moltbook-ambassador",
       "plugin_id": "hivra.contract.moltbook-ambassador.v1",
       "display_name": "Moltbook Ambassador",
-      "version": "0.8.2",
+      "version": "0.8.4",
       "package_kind": "zip",
-      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.11-plugins/moltbook_ambassador_draft_plugin-0.8.2.zip",
-      "sha256_hex": "ec1ebe13db72cf73d85d5db3099826f880d6719d66f30c5e018f81e22e09a611"
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.12-plugins/moltbook_ambassador_draft_plugin-0.8.4.zip",
+      "sha256_hex": "96c2b702c19f905809862499a37285d1420a04202692cf4896fe8c963b410d86"
     },
     {
       "id": "jack-ventura",
@@ -28,7 +28,7 @@
       "display_name": "Jack Ventura",
       "version": "0.2.1",
       "package_kind": "zip",
-      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.11-plugins/jack_ventura_plugin-0.2.1.zip",
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.12-plugins/jack_ventura_plugin-0.2.1.zip",
       "sha256_hex": "b4a06da9cb7c59874b149680cc5b129f58a197f1b249920d347a981f11f41256"
     }
   ],
@@ -36,7 +36,7 @@
     {
       "algorithm": "ed25519",
       "key_id": "f4757da54ecb6f16431bcfb4fcc947633d6f68c9b4576b69ddb61fc4fe2de7a3",
-      "signature_hex": "a4a5ce65b74d98dce61c63bc9a1375151d75a8850d5af5804b92883d31925490c25f1e04da804acf68923e10b0b7c7f818220ea5eca7631467957c9067821f05"
+      "signature_hex": "f912e7b2cfb72dbad9e68314acb08bc696462db9acfa404476d17af3fc0d9b9d4b9e74952fe9cf0c11b2f0cca678356faf8ef6ad760dd34c16e567e912288c01"
     }
   ]
 }

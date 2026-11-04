@@ -40,15 +40,15 @@ Every contract evaluation must produce:
 - canonical JSON payload with stable field names/order semantics
 - deterministic hash of canonical JSON (`sha256_hex`)
 
-Canonical payload MUST include:
+The selected contract owns its input/output schema. Chat binds peer, client
+message identity, text and creation time in canonical output. Common workspaces
+receive explicit owner settings, observation time, state/context and previous
+request result, then return state/context, view and at most one capability
+request. A solo workspace need not invent a peer, winner or settlement DTO.
 
-- `schema_version`
-- `plugin_id`
-- `contract_kind`
-- actor identifiers (`peer_hex` or equivalent)
-- all business-critical input fields
-- final decision fields (`outcome`, winner, etc)
-- provenance fields (oracle/event ids when applicable)
+External observations and host time enter as explicit input; WASM does not read
+the network or wall clock itself. Evaluation determinism does not make a remote
+service or inference provider deterministic or establish exactly-once effects.
 
 ## 4. Capability Policy
 
@@ -58,6 +58,7 @@ Rules:
 
 - least privilege only
 - unknown capabilities => install reject
+- readable retired metadata does not authorize activation or invocation
 - capability names are stable lowercase ids
 - capability evaluation is host-controlled, not plugin-controlled
 
@@ -86,11 +87,21 @@ Minimum required tests:
 - invariant checks and fail-closed cases
 - golden vectors for at least one happy path and one draw/edge path
 
-## 8. ABI Surface (Current Stage)
+## 8. ABI Surface
 
-While full wasm host execution is staged, plugin packages may expose:
+Installed packages are ZIPs containing `plugin/manifest.json` and
+`plugin/module.wasm`. They declare `runtime.abi = hivra_host_abi_v2` and export:
 
-- metadata ABI exports (for compatibility checks)
-- deterministic pure evaluation functions for future host wiring
+- `hivra_alloc_v1(len: u32) -> u32`
+- `hivra_evaluate_v1(ptr: u32, len: u32) -> u64`
+- `hivra_dealloc_v1(ptr: u32, len: u32)`
 
-Host API and capability checks remain authoritative.
+The packed result is `(output_ptr << 32) | output_len`. Evaluation consumes and
+returns bounded UTF-8 JSON. Modules import no host functions; technical requests
+return through the common continuation protocol. Metadata exports alone do not
+make an installed package executable.
+
+The operation catalog, permissions, bounds and maintained specialized contract
+are owned by Hivra's `docs/plugins/plugin_host_api_v1.md`; optional abilities are
+discovered with `api.describe`. Product changes within supported abilities do
+not require a new host adapter or Capsule build.

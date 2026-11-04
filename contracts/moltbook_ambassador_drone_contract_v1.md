@@ -1,234 +1,56 @@
-# Hivra Ambassador Drone Contract v1
+# Moltbook Ambassador Package Contract
 
-Status: deterministic draft, heartbeat, engagement planning, and bounded reply authorization
+Moltbook is an installed stateless `plugin_workspace_v1` package using common
+API protocol 2 over `hivra_host_abi_v2`. Its `plugin_id` remains
+`hivra.contract.moltbook-ambassador.v1`; that identity does not select a named
+service handler in Capsule. The release version is owned by the manifest.
 
-Plugin id: `hivra.contract.moltbook-ambassador.v1`
+## Canonical Boundaries
 
-This contract prepares a public technical draft from an explicit `Public
-Bulletin` for a human to review. It does not connect to Moltbook, read a
-Capsule, access a ledger, use an AI provider, store credentials, or publish
-remote content.
+The maintained host wire contract is
+[Plugin Host API](https://github.com/WSorr/Hivra-App/blob/main/docs/plugins/plugin_host_api_v1.md).
+The service workflow, fresh-history reconstruction, receipt checks and changed
+stateless recovery guarantees have one owner:
+[Moltbook Engagement Lifecycle](https://github.com/WSorr/Hivra-App/blob/main/docs/plugins/moltbook_engagement_lifecycle_v1.md).
+This package summary does not define another host lifecycle.
 
-## Contract boundary
+The package owns HTTP request construction, parsing, public source selection,
+news/reply/challenge prompts, verification and service-result interpretation.
+The host supplies owner-granted HTTP, protected secret application, Analyst AI
+inference, bounded execution and scheduling. It has no Moltbook adapter,
+publication journal, normalized-feed controller or editorial approval chain.
 
-```text
-explicit Public Bulletin
-  -> Ambassador Drone (WASM, deterministic)
-  -> validated public draft + hash
-```
+## Owner Workflow
 
-A Public Bulletin is a separate, intentionally published projection of public
-development facts. It is not the ledger, a contact card, a backup, or an
-implicit permission to publish. The producer must provide a stable
-`bulletin_id`; the host may later attach a signature and release metadata.
+Connect the owner's Keychain token through the common permission screen and
+choose repository, community, editorial instructions, workflow and interval.
+Owner settings live in the existing permission record, not a publication store.
+An authorized open/start and each cycle read current account publications and
+comments from Moltbook. Prepare without sending produces a preview; Start can
+authorize the configured complete workflow without per-publication approvals.
 
-The current capabilities are `content.draft.prepare`, `content.feed.plan`,
-`content.engagement.plan`, `content.reply.prepare`, and
-`content.reply.delegate`. None is a network capability. The host may provide a normalized, bounded
-public Home/Feed observation to the heartbeat method; credentials and provider
-DTOs never enter WASM.
+The package requests `http.request`, `ai.infer` and bounded `runtime.wait`
+through package-selected continuations. Its manifest has no storage capability;
+private work is transient and `state` is null. Service account facts never become
+Core/Ledger facts. Full revocation prevents new dispatch but cannot undo content
+already accepted by the service. Replacement needs a grant bound to the new
+package digest.
 
-## Heartbeat planning
+## Recovery And Compatibility
 
-`plan_moltbook_heartbeat` accepts one explicit UTC observation time, local
-allowed-topic policy, bounded Home counters/actions, structured activity on
-the agent's own posts, and up to 25 normalized public feed summaries. It
-deterministically returns one priority:
+Recent service history is not a lifetime archive. Unknown creation is observed
+without blindly resending in the same action. If accepted content remains hidden
+from history after process exit, service-only reconstruction cannot guarantee
+exactly-once creation across starts. Neither a host queue nor a permanent local
+archive is silently added to change this owner-selected retention model.
 
-- `review_activity` when unread account activity exists;
-- `inspect_feed` when verified non-spam candidates exist;
-- `idle` otherwise.
+The former `prepare_moltbook_*`, `plan_moltbook_*` and
+`authorize_moltbook_delegated_reply` host methods are retired. Legacy `content.*`
+manifest names may be readable for archive recovery/removal; they grant no
+execution path. Do not reintroduce the old host approval, daily-write counter,
+feed checkpoint or publication-effect protocol when extending this package.
 
-The result contains at most five candidate post ids. For `review_activity`
-these ids come only from structured activity on the agent's own posts; for
-`inspect_feed` they come only from verified non-spam feed candidates. The
-result always marks remote content untrusted, requires human review, and sets
-`publish_allowed: false`. The normal heartbeat also returns a bounded
-checkpoint projection. The host owns its durable persistence; WASM does not
-write or advance the checkpoint independently. It is a decision snapshot, not
-an effect, approval, reply, vote, follow, or publication receipt.
-
-### Public-change selection mode
-
-The host may call the same method with `planning_scope: "public_change"` and a
-bounded snapshot of Capsule-owned public changes. Each item contains only
-`source_id`, an allowed `category`, and either `draft_hash_hex: null` or a
-validated 64-character hexadecimal draft hash. The package selects at most one
-eligible undrafted source, or one prepared source when `resume_prepared` is
-true. Legacy `github-*` sources are excluded except for the host-defined
-`github-news-v2-*` source family.
-
-This mode is selection-only. It does not read a repository or provider, mutate
-the feed checkpoint, create a draft, approve an effect, or publish content.
-The host revalidates the selected source against the exact supplied snapshot
-before continuing through its existing AI, draft, approval, effect, and
-receipt lifecycle.
-
-## Engagement planning
-
-`plan_moltbook_engagement` accepts one explicitly selected, host-normalized
-post with at most 20 newest comments and the connected actor name from the
-Capsule-scoped provider binding. It returns one proposal class:
-`reply_draft`, `comment_draft`, `upvote_candidate`, `follow_candidate`, or
-`no_action`.
-
-The current implementation never emits `follow_candidate`: one post is not
-longitudinal evidence. Own-post activity may produce `reply_draft` only for
-the newest bounded comment not authored by the connected actor and not
-already answered directly by that actor. A newer foreign follow-up remains
-eligible. Verified, non-spam feed content may produce `comment_draft` or
-`upvote_candidate`. Locked, unverified, spam-marked, or weakly evidenced
-content produces `no_action`. No text is generated and no remote effect is
-authorized.
-
-## Bounded reply authorization
-
-`authorize_moltbook_delegated_reply` is a narrow authorization contract, not a
-network method. It binds one exact reply draft hash to one engagement-plan hash,
-post, mandatory parent comment, UTC observation, and delegation policy v1.
-
-Policy v1 permits replies only, at most 1..12 committed writes per UTC day,
-with a minimum interval of 5..1440 minutes. The host supplies the current
-write count (approved, queued, delivering, unresolved, or succeeded) and
-elapsed interval from its durable external-effect history. Exhausted budget, a premature interval, malformed evidence, or an
-unknown policy version fails closed.
-
-Successful output has `publish_allowed: true` and
-`human_review_required: false`, but it is still not a provider effect or a
-receipt. The host must prove that the canonical reply effect contains the same
-post, parent comment, reply draft hash, and engagement-plan hash before using
-the authorization hash as approval evidence. The existing effect state machine,
-provider allowlist, reconciliation, and receipt rules remain mandatory.
-
-This method does not let AI choose capabilities or modify policy. AI text must
-first pass the normal reply-draft contract; the authorization binds that exact
-validated result.
-
-The host must additionally enforce one canonical engagement per remote target.
-Assisted and Bounded handling are policies over that engagement, not separate
-effect routes. A matching active operation is resumed, a succeeded target is
-closed, and a different draft hash cannot bypass target-level deduplication.
-The normative host lifecycle is
-`docs/plugins/moltbook_engagement_lifecycle_v1.md` in the Hivra application
-repository.
-
-## Input
-
-```json
-{
-  "schema_version": 1,
-  "plugin_id": "hivra.contract.moltbook-ambassador.v1",
-  "bulletin_id": "release-v1.0.3-test14",
-  "release_tag": "v1.0.3-test14",
-  "category": "release",
-  "facts": [
-    "Hivra is a local-first runtime for user-owned Capsules.",
-    "The release includes bounded WASM plugin execution."
-  ],
-  "title_hint": "A local-first runtime for user-owned Capsules",
-  "reviewed_body": "Hivra keeps user-owned Capsule state local while bounded WASM plugins provide replaceable functionality.",
-  "audience": "agent-developers"
-}
-```
-
-Facts and `reviewed_body` are public, bounded inputs. The body may be written
-manually or proposed by an AI provider, but the exact title and body must be
-visible and editable before invocation. They are treated as text, never as
-instructions to invoke tools or disclose secrets. The plugin does not discover
-or select facts from a ledger, repository, filesystem, or network. It rejects a
-mechanical newline dump of facts so a review cannot silently fall back to the
-old repetitive publication format.
-
-## Output
-
-The plugin returns a deterministic `draft` envelope containing:
-
-- bulletin provenance (`bulletin_id`, `release_tag`, and `category`);
-- normalized title and reviewed body, preserved exactly;
-- `approval_required: true`;
-- safety flags;
-- a SHA-256 hash of the canonical draft.
-
-The output is not a publication receipt and must not be interpreted as remote
-success.
-
-## Ambassador Configuration v1
-
-The user-facing identity and policy are one host-owned plugin-state document.
-They are not manifest fields, ledger events, Capsule identity, or WASM secrets.
-
-```json
-{
-  "schema_version": 1,
-  "plugin_id": "hivra.contract.moltbook-ambassador.v1",
-  "agent_name": "hivra_ambassador",
-  "agent_description": "Technical ambassador for Hivra.",
-  "persona_summary": "Explain public Hivra development clearly and factually.",
-  "allowed_topics": ["hivra-development", "capsule-runtime", "wasm-drones"],
-  "approval_mode": "assisted",
-  "enabled": true
-}
-```
-
-Rules:
-
-- `agent_name` and `agent_description` are user-configurable Moltbook profile
-  values; they do not rename the Capsule or the plugin package.
-- `persona_summary` and `allowed_topics` are local policy, not public facts and
-  not instructions received from Moltbook.
-- `approval_mode` remains fail-closed at the profile layer. Assisted writes are
-  the default. Bounded delegation may only be exposed after the host binds this
-  WASM authorization to the existing external-effect lifecycle and a visible
-  local stop control.
-- `enabled` is a local stop control and does not delete the remote account.
-- API keys, claim tokens, Capsule seeds, transport keys, ledger data, and
-  private contact data are forbidden in this document.
-- The document is scoped by `(capsule_root, plugin_id)` and must be isolated
-  from other plugin instances. The host-owned credential/effect binding adds
-  `provider_id` and `provider_account_id` without exposing either secret or
-  provider DTOs to WASM.
-
-The Public Bulletin draft method intentionally accepts only an explicit Public
-Bulletin. Other deterministic methods receive only the bounded policy fields
-required by their exact contract; the host owns registration, observation,
-inference disclosure, and external publication.
-
-## Mandatory safety rules
-
-- Never include seed phrases, API keys, credentials, ledger contents, contact
-  cards, private Capsule data, or local filesystem paths.
-- Reject drafts that promote cryptocurrency, trading signals, financial
-  products, spam, impersonation, or medical/legal advice.
-- Do not infer identity, reputation, ownership, or authorization from source
-  text.
-- Keep the first user-facing mode assisted: exact draft preview and explicit
-  approval are required for every future remote write.
-
-## Host adapter and automatic-mode gate
-
-The host implementation now provides the following required remote-access
-boundaries:
-
-1. provider-neutral effect states covering prepare, approval, queue, delivery,
-   unresolved timeout, reconciliation, terminal receipt, and cancellation;
-2. stable semantic operation ids and fake-adapter duplicate/restart fixtures;
-3. provider account/claim flow and free-use confirmation;
-4. Capsule/plugin/provider-scoped secure credential storage;
-5. allowlisted Moltbook adapter endpoints using `www.moltbook.com`;
-6. host-enforced rate limits and stop/revoke controls;
-7. a dedicated Ambassador workspace with exact approval preview and receipt
-   history;
-8. macOS and Android offline, restart, replay, and manual approval tests.
-
-Observe and Assisted publication may use this host boundary. Automatic modes
-remain blocked until canonical target-level engagement identity, one cycle
-orchestrator, duplicate freeze, stop control, and the release evidence in
-`docs/plugins/moltbook_engagement_lifecycle_v1.md` are complete.
-
-The detailed implementation order and UI boundary are owned by
-`docs/plugins/moltbook_agent_drone_design_v1.md` in the Hivra application
-repository. This plugin contract owns only deterministic WASM-facing decisions
-and authorization evidence; it never owns provider effects.
-
-Moltbook remains external remote truth. It never becomes Core truth, a
-relationship fact, a consensus input, or a backup payload.
+Tests exercise package semantics with synthetic HTTP/AI results. Completed
+native stages and remaining live-write acceptance are recorded in the main
+repository's development control; neither a local build nor this contract
+qualifies publication/reply/challenge execution.
