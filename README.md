@@ -154,7 +154,10 @@ Local ZIP installation remains a development path.
   marker exists, missing service evidence remains uncertain and cannot trigger
   a second send. Explicit Start uses the newly selected instrument even when
   replacing a running executor; retained orders keep their original identities
-  and plans. The published Discovery version above remains unchanged until
+  and plans. Its permission description covers the workflow without duplicating
+  the mutable instrument or limits; selected settings and workspace fields own
+  those values, including when Start reuses the preceding workflow declaration.
+  The published Discovery version above remains unchanged until
   a separately authorized release and packaged/live acceptance.
   Entry stops remain attached to the entry request; fill-based amendment is
   outside the owner-selected scope. Actual full TP/SL closure and continuous

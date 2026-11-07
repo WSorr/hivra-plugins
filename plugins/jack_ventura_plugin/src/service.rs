@@ -638,7 +638,7 @@ fn presentation(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Value> {
     view["confirmation"] = Value::Null;
     if c.engine.account.is_some() {
         view["schedule"] = json!({"version":2,"action":"cycle","interval_seconds":60,"access":access(true),
-            "description":format!("Run Jack Ventura for {}. Package settings: margin {} USDT, requested stop {}%. Permit reading the account, placing and cancelling managed orders and reducing exits. The package enforces these settings; network permission is not a host financial-loss guarantee. Existing exchange orders remain after revocation.", c.engine.settings.symbol, c.engine.settings.entry_margin,c.engine.settings.stop_percent)});
+            "description":"Run Jack Ventura with the settings selected at Start. Permit reading the account, placing and cancelling managed orders and reducing exits. The package enforces the selected settings; network permission is not a host financial-loss guarantee. Existing exchange orders remain after revocation."});
     }
     if w.orders_view {
         return Ok(view);
@@ -2515,18 +2515,34 @@ mod tests {
     fn explicit_start_uses_selected_symbol_and_preserves_previous_managed_identity_without_dispatch(
     ) {
         let c = managed("open", 0.0);
+        let previous = invoke(
+            "present",
+            serde_json::to_value(&c).unwrap(),
+            Value::Null,
+            Value::Null,
+            100_000_000,
+        );
         let old = serde_json::to_value(&c.engine.entry).unwrap();
         let mut settings = serde_json::to_value(&c.engine.settings).unwrap();
         settings["symbol"] = json!("MNT-USDT");
+        settings["entry_margin"] = json!(2.0);
+        settings["stop_percent"] = json!(15.0);
+        settings["timeframes"] = json!("1m");
         let raw = json!({"api_version":2,"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
             "action":"start","state":c,"settings":settings,"observed_at_ms":100_000_001,"execution":{"running":true}});
         let out: Value =
             serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap();
         assert_eq!(out["status"], "executed", "{out}");
+        assert_eq!(out["result"]["state"]["engine"]["settings"], settings);
+        // A remote Start may reuse the previous workflow declaration. Mutable
+        // choices belong in settings/fields, not a second copy in its prose.
         assert_eq!(
-            out["result"]["state"]["engine"]["settings"]["symbol"],
-            "MNT-USDT"
+            out["result"]["view"]["schedule"],
+            previous["result"]["view"]["schedule"]
         );
+        for field in out["result"]["view"]["fields"].as_array().unwrap() {
+            assert_eq!(field["value"], settings[field["id"].as_str().unwrap()]);
+        }
         assert!(out["result"]["state"]["engine"]["entry"].is_null());
         assert_eq!(out["result"]["state"]["engine"]["parked"][0]["entry"], old);
         assert!(out["result"]["requests"].as_array().unwrap().is_empty());
