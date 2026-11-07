@@ -8,6 +8,8 @@ const ORIGIN: &str = "https://open-api.bingx.com";
 const UID: &str = "/openApi/account/v1/uid";
 const ORDER: &str = "/openApi/swap/v2/trade/order";
 const POSITIONS: &str = "/openApi/swap/v2/user/positions";
+const HISTORY: &str = "/openApi/swap/v2/trade/allOrders";
+const FILLS: &str = "/openApi/swap/v2/trade/allFillOrders";
 const OPEN: &str = "/openApi/swap/v2/trade/openOrders";
 const LEVERAGE: &str = "/openApi/swap/v2/trade/leverage";
 const MODE: &str = "/openApi/swap/v1/positionSide/dual";
@@ -33,6 +35,10 @@ struct Checkpoint {
     intents: BTreeMap<String, String>,
     #[serde(default)]
     new_entries: bool,
+    // One owned-trade locator, not a fill/history archive. Service observations
+    // are reacquired on open/refresh and never become host-owned account truth.
+    #[serde(default)]
+    last_trade: Option<Value>,
 }
 
 impl Default for Checkpoint {
@@ -42,6 +48,7 @@ impl Default for Checkpoint {
             engine: State::new(Settings::default()),
             intents: BTreeMap::new(),
             new_entries: true,
+            last_trade: None,
         }
     }
 }
@@ -84,6 +91,8 @@ struct Work {
     running: bool,
     #[serde(default)]
     orders_view: bool,
+    #[serde(default)]
+    trade_result: Value,
 }
 
 fn hash(value: &Value) -> String {
@@ -226,6 +235,7 @@ fn engine(
 ) -> R<Value> {
     // Call the private strategy directly. Encoding a second invocation envelope
     // and decoding a second result consumed the sandbox budget for no behavior.
+    let final_receipt = snapshot.as_ref().and_then(|v| v.get("entry")).cloned();
     let snapshot = snapshot.map(|v| serde_json::value::to_raw_value(&v).unwrap());
     let execution = c
         .engine
@@ -237,6 +247,11 @@ fn engine(
             symbol: c.engine.settings.symbol.clone(),
             allow_new_entries: c.new_entries,
         });
+    let previous_entry = if action == "lifecycle" {
+        c.engine.entry.clone()
+    } else {
+        None
+    };
     let previous_exit = c
         .engine
         .entry
@@ -290,6 +305,28 @@ fn engine(
         // All exact managed orders were terminal and the position was flat.
         // A retired plan no longer needs a private duplicate-send checkpoint.
         let plan = serde_json::to_value(output.retired_entry.unwrap()).unwrap();
+        if let Some(entry) = previous_entry {
+            let receipt: OrderEvidence = match final_receipt {
+                Some(raw) => {
+                    serde_json::from_value(raw).map_err(|_| "Invalid final entry receipt")?
+                }
+                None => entry
+                    .evidence
+                    .clone()
+                    .ok_or("Missing final entry receipt")?,
+            };
+            if receipt.filled_quantity > 0.0 {
+                c.last_trade = Some(
+                    json!({"account_id":plan["account_id"],"symbol":plan["symbol"],
+                "side":plan["side"],"from":plan["prepared_at_ms"],"closed_at":now,
+                "entry_id":receipt.order_id,"client_id":receipt.client_order_id,
+                "quantity":receipt.filled_quantity,"position_id":entry.observed_position_id,
+                "tp_id":entry.profit_exit.as_ref().and_then(|e| e.evidence.as_ref()).and_then(|e| e.order_id.as_ref())}),
+                );
+                w.queue.retain(|j| j["kind"] != "trade.result.read");
+                queue_trade_result(c, w);
+            }
+        }
         w.dirty = true;
         c.intents.remove(&entry_id(&plan));
         let prefix = format!("cancel:{}:", entry_id(&plan));
@@ -300,6 +337,293 @@ fn engine(
         }
     }
     Ok(view)
+}
+
+fn queue_trade_result(c: &Checkpoint, w: &mut Work) {
+    if let Some(trade) = c.last_trade.as_ref().filter(|trade| {
+        c.engine
+            .account
+            .as_ref()
+            .is_some_and(|a| trade["account_id"] == a.account_id)
+            && trade["symbol"] == c.engine.settings.symbol
+    }) {
+        w.trade_result = Value::Null;
+        w.queue.insert(
+            0,
+            json!({"kind":"trade.result.read","symbol":trade["symbol"],"trade":trade}),
+        );
+    }
+}
+
+fn signed_number(value: &Value) -> R<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|v| v.parse().ok()))
+        .filter(|v| v.is_finite())
+        .ok_or_else(|| "Invalid trade accounting number".into())
+}
+
+fn position_id(row: &Value) -> Option<String> {
+    row.get("positionId")
+        .or_else(|| row.get("positionID"))
+        .and_then(|v| text(v).ok())
+        .filter(|v| v != "0")
+}
+
+fn unavailable_trade_result(w: &mut Work, error: &str) -> bool {
+    if w.pending
+        .as_ref()
+        .is_none_or(|j| j["kind"] != "trade.result.read")
+    {
+        return false;
+    }
+    // Failure to reconstruct a completed trade must not strand management of
+    // the current position or prevent fresh entries under the owner's Start.
+    w.trade_result = json!({"confirmed":false,"summary":"Result not confirmed — exchange evidence unavailable or incomplete",
+        "details":error});
+    w.pending = None;
+    w.job = None;
+    true
+}
+
+fn receive_trade_result(
+    _c: &mut Checkpoint,
+    w: &mut Work,
+    mut j: Value,
+    raw: &Value,
+    now: i64,
+) -> R<()> {
+    let t = j["trade"].clone();
+    let opening_side = if t["side"] == "long" { "BUY" } else { "SELL" };
+    let closing_side = if opening_side == "BUY" { "SELL" } else { "BUY" };
+    match j["stage"].as_str().ok_or("Missing result stage")? {
+        "uid" => {
+            let uid = text(&raw["uid"])?;
+            if uid.len() > 30
+                || !uid.bytes().all(|b| b.is_ascii_digit())
+                || t["account_id"] != account_id(&uid)
+            {
+                return Err("Last trade belongs to another exchange account".into());
+            }
+            j["stage"] = json!("result_order");
+        }
+        "result_order" => {
+            let r = raw.get("order").unwrap_or(raw);
+            if text(r.get("orderId").unwrap_or(&r["orderID"]))? != text(&t["entry_id"])?
+                || r["clientOrderId"] != t["client_id"]
+                || r["symbol"] != t["symbol"]
+                || r["side"] != opening_side
+                || number(&r["executedQty"])? != number(&t["quantity"])?
+                || !matches!(
+                    r["status"].as_str(),
+                    Some("FILLED" | "CANCELED" | "CANCELLED" | "EXPIRED")
+                )
+            {
+                return Err("Last trade entry identity or final quantity is unverified".into());
+            }
+            let observed = t["position_id"].as_str().map(str::to_owned);
+            let actual = position_id(r);
+            if observed.is_some() && actual.is_some() && observed != actual {
+                return Err("Last trade position identity changed".into());
+            }
+            j["position_id"] = json!(observed.or(actual));
+            j["orders"] = json!([{ "id":t["entry_id"],"qty":t["quantity"],"side":opening_side,"kind":"entry" }]);
+            j["stage"] = json!("result_history");
+        }
+        "result_history" => {
+            let rows = raw
+                .get("orders")
+                .unwrap_or(raw)
+                .as_array()
+                .ok_or("Invalid trade order history")?;
+            if rows.len() >= 100 {
+                return Err(
+                    "Last trade result incomplete: order history reached its bounded limit".into(),
+                );
+            }
+            let mut ids = std::collections::BTreeSet::new();
+            for r in rows {
+                if r["symbol"] != t["symbol"] || r["side"] != closing_side {
+                    continue;
+                }
+                let id = text(r.get("orderId").unwrap_or(&r["orderID"]))?;
+                let tp = t["tp_id"].as_str() == Some(id.as_str());
+                let matched_position = position_id(r).is_some_and(|p| j["position_id"] == p);
+                if tp
+                    && position_id(r).is_some()
+                    && !j["position_id"].is_null()
+                    && !matched_position
+                {
+                    return Err("Profit exit belongs to a different position".into());
+                }
+                if !tp && !matched_position {
+                    continue;
+                }
+                let hedge = if t["side"] == "long" { "LONG" } else { "SHORT" };
+                if r["positionSide"] != hedge
+                    && !(r["positionSide"] == "BOTH"
+                        && matches!(r["reduceOnly"].as_bool(), Some(true)))
+                {
+                    return Err("Last trade exit does not prove reducing scope".into());
+                }
+                let qty = number(&r["executedQty"])?;
+                if qty == 0.0 {
+                    continue;
+                }
+                if !ids.insert(id.clone())
+                    || !matches!(
+                        r["status"].as_str(),
+                        Some("FILLED" | "CANCELED" | "CANCELLED" | "EXPIRED")
+                    )
+                {
+                    return Err("Last trade has duplicate or nonterminal reducing orders".into());
+                }
+                let kind = if tp && r["type"] == "LIMIT" {
+                    "TP"
+                } else if matched_position
+                    && matches!(r["type"].as_str(), Some("STOP" | "STOP_MARKET"))
+                {
+                    "SL"
+                } else {
+                    "Other"
+                };
+                j["orders"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"id":id,"qty":qty,"side":closing_side,"kind":kind}));
+            }
+            if j["orders"].as_array().unwrap().len() > 16 {
+                return Err("Too many closing orders for bounded trade result".into());
+            }
+            j["index"] = json!(0);
+            j["totals"] = json!({"entry_qty":0.,"entry_cost":0.,"exit_qty":0.,"exit_cost":0.,"fee":0.,"pnl":0.,"TP":0.,"SL":0.,"Other":0.});
+            j["stage"] = json!("result_fills");
+        }
+        "result_fills" => {
+            let index = j["index"].as_u64().ok_or("Missing result order index")? as usize;
+            let order = j["orders"][index].clone();
+            let rows = raw
+                .get("fill_orders")
+                .unwrap_or(raw)
+                .as_array()
+                .ok_or("Invalid trade fills")?;
+            if rows.len() > 1000 {
+                return Err("Too many fills for bounded trade result".into());
+            }
+            let mut ids = std::collections::BTreeSet::new();
+            let mut quantity = 0.;
+            for r in rows {
+                let at = r["time"].as_i64().ok_or("Missing fill time")?;
+                if r["symbol"] != t["symbol"]
+                    || text(&r["orderId"])? != text(&order["id"])?
+                    || r["side"] != order["side"]
+                    || !ids.insert(text(&r["tradeId"])?)
+                    || at < t["from"].as_i64().unwrap()
+                    || at > t["closed_at"].as_i64().unwrap()
+                    || r.get("feeAsset").is_some_and(|asset| asset != "USDT")
+                {
+                    return Err(
+                        "Fill identity, time or fee currency does not match the trade".into(),
+                    );
+                }
+                let qty = number(&r["qty"])?;
+                let price = number(&r["price"])?;
+                if qty == 0. || price == 0. {
+                    return Err("Empty trade fill".into());
+                }
+                quantity += qty;
+                let prefix = if order["kind"] == "entry" {
+                    "entry"
+                } else {
+                    "exit"
+                };
+                for (key, value) in [
+                    (format!("{prefix}_qty"), qty),
+                    (format!("{prefix}_cost"), qty * price),
+                    ("fee".into(), signed_number(&r["fee"])?),
+                    ("pnl".into(), signed_number(&r["realizedPnl"])?),
+                ] {
+                    let total = signed_number(&j["totals"][&key])? + value;
+                    if !total.is_finite() {
+                        return Err("Trade result overflow".into());
+                    }
+                    j["totals"][key] = json!(total);
+                }
+                if let Some(kind) = order["kind"].as_str().filter(|s| *s != "entry") {
+                    j["totals"][kind] = json!(number(&j["totals"][kind])? + qty);
+                }
+            }
+            if !same_price(quantity, number(&order["qty"])?) {
+                return Err("Last trade fills are incomplete; result not confirmed".into());
+            }
+            j["index"] = json!(index + 1);
+            if index + 1 == j["orders"].as_array().unwrap().len() {
+                let totals = &j["totals"];
+                if !same_price(number(&totals["entry_qty"])?, number(&totals["exit_qty"])?) {
+                    return Err(
+                        "Last trade closing fills do not cover the entry; result not confirmed"
+                            .into(),
+                    );
+                }
+                j["stage"] = json!("result_positions");
+            }
+        }
+        "result_positions" => {
+            let positions = positions(raw, &t["symbol"])?;
+            if positions
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| j["position_id"].is_null() || p["position_id"] == j["position_id"])
+            {
+                return Err(
+                    "Last trade position remains open; full closure is not confirmed".into(),
+                );
+            }
+            j["stage"] = json!("result_open");
+        }
+        "result_open" => {
+            let rows = raw
+                .get("orders")
+                .unwrap_or(raw)
+                .as_array()
+                .ok_or("Invalid final open orders")?;
+            if rows.iter().filter(|r| r["symbol"] == t["symbol"]).any(|r| {
+                let id = text(r.get("orderId").unwrap_or(&r["orderID"])).ok();
+                j["orders"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|o| id.as_ref().is_some_and(|id| o["id"] == *id))
+                    || position_id(r).is_some_and(|p| j["position_id"] == p)
+            }) {
+                return Err(
+                    "Last trade still has a matching open order; full closure is not confirmed"
+                        .into(),
+                );
+            }
+            let a = &j["totals"];
+            let qty = number(&a["entry_qty"])?;
+            let reason = if same_price(number(&a["TP"])?, qty) {
+                "TP"
+            } else if same_price(number(&a["SL"])?, qty) {
+                "SL"
+            } else {
+                "Other / mixed exit"
+            };
+            w.trade_result = json!({"confirmed":true,"summary":format!("{} · {} {}\nAverage entry {} → exit {}\nRealized PnL {:+.6} USDT · fees/rebates {:+.6} USDT\nAfter trading fees {:+.6} USDT · funding excluded",
+                reason,qty,text(&t["symbol"])?,number(&a["entry_cost"])?/qty,number(&a["exit_cost"])?/qty,
+                signed_number(&a["pnl"])?,signed_number(&a["fee"])?,signed_number(&a["pnl"])?+signed_number(&a["fee"])?),
+                "details":format!("Last trade: exchange fills read at {}. Position {}. Orders {}. Matching position and open orders absent; funding is not included.",now,
+                    j["position_id"].as_str().unwrap_or("unavailable"),j["orders"].as_array().unwrap().iter().map(|o| text(&o["id"]).unwrap()).collect::<Vec<_>>().join(", "))});
+            w.pending = None;
+            return Ok(());
+        }
+        _ => return Err("Unknown trade-result stage".into()),
+    }
+    w.job = Some(j);
+    w.pending = None;
+    Ok(())
 }
 
 fn presentation(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Value> {
@@ -314,7 +638,7 @@ fn presentation(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Value> {
     view["confirmation"] = Value::Null;
     if c.engine.account.is_some() {
         view["schedule"] = json!({"version":2,"action":"cycle","interval_seconds":60,"access":access(true),
-            "description":format!("Run Jack Ventura for {}. Package settings: margin {} USDT, requested stop {}%. Permit reading the account, placing and cancelling managed orders and reducing exits. The package enforces these settings; network permission is not a host financial-loss guarantee. Existing exchange orders remain after revocation.", c.engine.settings.symbol, c.engine.settings.entry_margin,c.engine.settings.stop_percent)});
+            "description":"Run Jack Ventura with the settings selected at Start. Permit reading the account, placing and cancelling managed orders and reducing exits. The package enforces the selected settings; network permission is not a host financial-loss guarantee. Existing exchange orders remain after revocation."});
     }
     if w.orders_view {
         return Ok(view);
@@ -374,7 +698,11 @@ fn presentation(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Value> {
     } else if w.running && c.new_entries {
         "Jack is running\nWaiting for an eligible entry. Orders and positions are managed automatically; no further entry confirmation is needed.".into()
     } else if c.engine.retired_before_ms > 0 {
-        "Previous position/order is no longer active\nClosure reason and PnL are not inferred from a flat position.".into()
+        if w.trade_result["confirmed"] == true {
+            "Last managed trade is closed.".into()
+        } else {
+            "Previous position/order is no longer active\nRead exchange executions to confirm its result.".into()
+        }
     } else {
         "Ready to observe the market\nStart enables new entries within your saved settings and permissions.".into()
     };
@@ -424,6 +752,12 @@ fn presentation(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Value> {
         message
             .push_str("\nNew entries off. Existing orders and positions remain at the exchange.");
     }
+    if let Some(result) = w.trade_result["summary"].as_str() {
+        message.push_str("\n\nLast trade · ");
+        message.push_str(result);
+    } else if c.last_trade.is_some() {
+        message.push_str("\n\nLast trade result requires a fresh exchange read.");
+    }
     view["message"] = json!(message);
     view["summary"] = json!(format!(
         "BingX · LIVE · {} · {}\n{} · Entry margin {} USDT · Stop budget {}% of margin",
@@ -444,7 +778,11 @@ fn presentation(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Value> {
     view["details"] = json!(format!(
         "{}\n\n{}\n{}",
         view["details"].as_str().unwrap_or(""),
-        evidence,
+        format!(
+            "{}\n{}",
+            evidence,
+            w.trade_result["details"].as_str().unwrap_or("")
+        ),
         stop_details
     ));
     view["details_title"] = json!("Orders and calculation evidence");
@@ -884,6 +1222,53 @@ fn request_for(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Option<Value>> {
             text(&j["symbol"])?
         };
         let mut p = params(&[("symbol", symbol)]);
+        if kind == "trade.result.read" {
+            let trade = &j["trade"];
+            let from = trade["from"].as_i64().ok_or("Missing trade start")?;
+            let end = trade["closed_at"].as_i64().ok_or("Missing trade closure")?;
+            if from <= 0 || end < from || end - from > 7 * 86_400_000 {
+                return Err(
+                    "Last trade result unavailable: exchange history window exceeds seven days"
+                        .into(),
+                );
+            }
+            let stage = text(&j["stage"])?;
+            let path = match stage.as_str() {
+                "uid" => {
+                    p.clear();
+                    UID
+                }
+                "result_order" => {
+                    p.insert("orderId".into(), text(&trade["entry_id"])?);
+                    ORDER
+                }
+                "result_history" => {
+                    p.extend(params(&[
+                        ("startTime", from.to_string()),
+                        ("endTime", end.to_string()),
+                        ("limit", "100".into()),
+                    ]));
+                    HISTORY
+                }
+                "result_fills" => {
+                    p.extend(params(&[
+                        ("tradingUnit", "COIN".into()),
+                        ("startTs", from.to_string()),
+                        ("endTs", end.to_string()),
+                        (
+                            "orderId",
+                            text(&j["orders"][j["index"].as_u64().unwrap_or(0) as usize]["id"])?,
+                        ),
+                    ]));
+                    FILLS
+                }
+                "result_positions" => POSITIONS,
+                "result_open" => OPEN,
+                _ => return Err("Invalid trade-result continuation".into()),
+            };
+            w.job = Some(j);
+            return Ok(Some(http(w, path, "GET", p, true, now)));
+        }
         let stage = j["stage"].as_str().unwrap();
         let path = match stage {
             "uid" => {
@@ -1074,6 +1459,9 @@ fn receive(c: &mut Checkpoint, w: &mut Work, result: &Value, now: i64) -> R<()> 
         }
         w.job = Some(j);
         return Ok(());
+    }
+    if kind == "trade.result.read" {
+        return receive_trade_result(c, w, j, &raw, now);
     }
     let stage = text(&j["stage"])?;
     let symbol = if j["plan"]["entry_plan"].is_object() {
@@ -1622,7 +2010,12 @@ pub(super) fn evaluate_json(raw: &[u8]) -> Vec<u8> {
                 .settings
                 .clone()
                 .unwrap_or_else(|| serde_json::to_value(&c.engine.settings).unwrap());
+            // An explicit Start replaces the previous executor's selection.
+            // Its active flag is not a veto on the owner's newly chosen symbol.
+            let running = w.running;
+            w.running = false;
             engine(&mut c, &mut w, "start", None, Some(configured), now)?;
+            w.running = running;
             w.queue.clear();
             w.resume = None;
             w.autonomous = false;
@@ -1632,29 +2025,60 @@ pub(super) fn evaluate_json(raw: &[u8]) -> Vec<u8> {
             if action == "connect" {
                 w.autonomous = false;
             }
-            engine(&mut c, &mut w, action, None, settings, now).map(|_| ())
+            if matches!(action, "open" | "cycle" | "refresh_order") {
+                // The host durably saves a dispatch intent before executing
+                // HTTP. A restart before that checkpoint is proven non-send,
+                // unlike an intent with a lost service response.
+                let interrupted = c.engine.entry.as_ref().and_then(|entry| {
+                    if entry.attempted && entry.evidence.is_none() {
+                        Some(json!({"kind":"order.entry.place","plan":entry.plan}))
+                    } else {
+                        entry
+                            .profit_exit
+                            .as_ref()
+                            .filter(|exit| exit.attempted && exit.evidence.is_none())
+                            .map(|exit| json!({"kind":"position.exit.place","plan":exit.plan}))
+                    }
+                });
+                if let Some(job) = interrupted {
+                    w.pending = Some(job);
+                    proven_preflight_failure(&mut c, &mut w, now)?;
+                }
+            }
+            engine(&mut c, &mut w, action, None, settings, now).map(|_| {
+                if matches!(action, "open" | "cycle" | "refresh_order" | "inspect") {
+                    queue_trade_result(&c, &mut w);
+                }
+            })
         };
         if let Err(error) = operation {
-            proven_preflight_failure(&mut c, &mut w, now)?;
-            failure = Some(error);
-            w = Work {
-                dirty: w.dirty,
-                running: enabled,
-                ..Work::default()
-            };
+            if !unavailable_trade_result(&mut w, &error) {
+                proven_preflight_failure(&mut c, &mut w, now)?;
+                failure = Some(error);
+                w = Work {
+                    dirty: w.dirty,
+                    running: enabled,
+                    trade_result: w.trade_result.take(),
+                    ..Work::default()
+                };
+            }
         }
         let request = if failure.is_none() {
-            match request_for(&mut c, &mut w, now) {
-                Ok(r) => r,
-                Err(error) => {
-                    proven_preflight_failure(&mut c, &mut w, now)?;
-                    failure = Some(error);
-                    w = Work {
-                        dirty: w.dirty,
-                        running: enabled,
-                        ..Work::default()
-                    };
-                    None
+            loop {
+                match request_for(&mut c, &mut w, now) {
+                    Ok(r) => break r,
+                    Err(error) if unavailable_trade_result(&mut w, &error) => continue,
+                    Err(error) => {
+                        proven_preflight_failure(&mut c, &mut w, now)?;
+                        failure = Some(error);
+                        w = Work {
+                            dirty: w.dirty,
+                            running: enabled,
+                            trade_result: w.trade_result.take(),
+                            ..Work::default()
+                        };
+                        break None;
+                    }
                 }
             }
         } else {
@@ -1753,6 +2177,9 @@ mod tests {
             ..Work::default()
         };
         for _ in 0..8 {
+            if c.engine.entry.is_none() {
+                return c;
+            }
             let Some(request) = request_for(&mut c, &mut w, now).unwrap() else {
                 return c;
             };
@@ -1782,6 +2209,177 @@ mod tests {
         }
         panic!("Unbounded observation")
     }
+    fn trade_result_fixture(
+        reason: &str,
+        mut change: impl FnMut(&str, &mut Value),
+    ) -> R<(Checkpoint, Work)> {
+        let now = 100_000_001;
+        let mut c = managed("filled", 1.0);
+        let plan = serde_json::to_value(&c.engine.entry.as_ref().unwrap().plan).unwrap();
+        let qty = number(&plan["quantity"])?;
+        c.last_trade = Some(
+            json!({"account_id":plan["account_id"],"symbol":plan["symbol"],"side":"long",
+            "from":now-1000,"closed_at":now,"entry_id":"123","client_id":"b".repeat(40),
+            "position_id":"456","quantity":qty,"tp_id":if reason=="TP" {json!("999")} else {Value::Null}}),
+        );
+        c.engine.entry = None;
+        let original = serde_json::to_value(&c).unwrap();
+        let mut w = Work::default();
+        queue_trade_result(&c, &mut w);
+        for _ in 0..16 {
+            let Some(r) = request_for(&mut c, &mut w, now)? else {
+                assert_eq!(
+                    serde_json::to_value(&c).unwrap(),
+                    original,
+                    "Exchange history must remain transient"
+                );
+                return Ok((c, w));
+            };
+            assert_eq!(r["method"], "GET");
+            let url = r["url"].as_str().unwrap();
+            let stage = text(&w.job.as_ref().unwrap()["stage"])?;
+            let mut raw = match stage.as_str() {
+                "uid" => json!({"uid":"123456789"}),
+                "result_order" => {
+                    json!({"order":{"orderId":"123","clientOrderId":"b".repeat(40),"symbol":"BTC-USDT",
+                    "side":"BUY","status":"FILLED","executedQty":qty,"positionID":"456"}})
+                }
+                "result_history" => {
+                    json!({"orders":[{"orderId":"999","positionID":"456","symbol":"BTC-USDT","side":"SELL",
+                    "positionSide":"LONG","status":"FILLED","executedQty":qty,"type":if reason=="SL" {"STOP_MARKET"} else if reason=="TP" {"LIMIT"} else {"MARKET"}},
+                    {"orderId":"789","positionID":"other","symbol":"BTC-USDT","side":"SELL","executedQty":qty}]})
+                }
+                "result_fills" => {
+                    assert!(
+                        url.contains("startTs=")
+                            && url.contains("endTs=")
+                            && url.contains("tradingUnit=COIN")
+                    );
+                    let entry = url.contains("orderId=123&");
+                    json!({"fill_orders":[{"tradeId":if entry {"1"} else {"2"},"orderId":if entry {"123"} else {"999"},
+                        "symbol":"BTC-USDT","side":if entry {"BUY"} else {"SELL"},"qty":qty,
+                        "price":if entry {96.5} else {105.0},"fee":if entry {-0.01} else {-0.02},"realizedPnl":if entry {0.0} else {8.5*qty},"time":now-1}]})
+                }
+                "result_positions" => json!([]),
+                "result_open" => {
+                    json!({"orders":[{"orderId":"789","symbol":"BTC-USDT","positionID":"other"}]})
+                }
+                _ => panic!("Unexpected result stage {stage}"),
+            };
+            change(&stage, &mut raw);
+            receive(
+                &mut c,
+                &mut w,
+                &json!({"outcome":"response","status":200,"body":json!({"code":0,"data":raw}).to_string()}),
+                now,
+            )?;
+            // Every continuation is serializable with the unchanged bounds;
+            // a fresh invocation needs no host interpretation of its shape.
+            let context = serde_json::to_vec(&w).unwrap();
+            assert!(context.len() < 16 * 1024);
+            w = serde_json::from_slice(&context).unwrap();
+        }
+        panic!("Unbounded result reads")
+    }
+
+    #[test]
+    fn closed_trade_reads_exact_fills_fees_and_reason_without_archiving_service_history() {
+        for reason in ["TP", "SL", "Other"] {
+            let (c, mut w) = trade_result_fixture(reason, |_, _| {}).unwrap();
+            assert!(w.trade_result["summary"]
+                .as_str()
+                .unwrap()
+                .starts_with(reason));
+            assert!(w.trade_result["summary"]
+                .as_str()
+                .unwrap()
+                .contains("-0.030000"));
+            assert!(w.trade_result["details"]
+                .as_str()
+                .unwrap()
+                .contains("123, 999"));
+            // Reopen loses transient observations, retains only the locator.
+            let mut restarted: Checkpoint =
+                serde_json::from_value(serde_json::to_value(&c).unwrap()).unwrap();
+            w = Work::default();
+            queue_trade_result(&restarted, &mut w);
+            assert!(w.trade_result.is_null());
+            assert!(request_for(&mut restarted, &mut w, 100_000_002)
+                .unwrap()
+                .unwrap()["url"]
+                .as_str()
+                .unwrap()
+                .contains(UID));
+        }
+    }
+
+    #[test]
+    fn unavailable_last_result_keeps_current_management_queue_and_never_creates_a_retry_loop() {
+        let mut c = managed("filled", 1.0);
+        let mut w = Work {
+            pending: Some(json!({"kind":"trade.result.read"})),
+            job: Some(json!({"kind":"trade.result.read"})),
+            queue: vec![json!({"kind":"order.snapshot.read","scope":"open","symbol":"BTC-USDT"})],
+            autonomous: true,
+            running: true,
+            ..Work::default()
+        };
+        assert!(unavailable_trade_result(&mut w, "Service unavailable"));
+        assert_eq!(w.trade_result["confirmed"], false);
+        assert!(w.autonomous && w.running);
+        assert_eq!(w.queue.len(), 1);
+        let request = request_for(&mut c, &mut w, 100_000_001).unwrap().unwrap();
+        assert!(request["url"].as_str().unwrap().contains(UID));
+        assert!(!unavailable_trade_result(
+            &mut w,
+            "Current management failure"
+        ));
+    }
+
+    #[test]
+    fn closure_locator_uses_the_final_fill_quantity_and_never_persists_result_observations() {
+        let mut c = managed("partial", 0.5);
+        c = observe(c, "PARTIALLY_FILLED", 0.5, true, false, 100_000_000);
+        c = observe(c, "FILLED", 1.0, false, false, 100_000_001);
+        assert!(c.engine.entry.is_none());
+        assert_eq!(
+            c.last_trade.as_ref().unwrap()["quantity"],
+            json!(crate::tests::lifecycle_state("filled", 1.0)["entry"]["plan"]["quantity"])
+        );
+        let raw = serde_json::to_string(&c).unwrap();
+        assert!(
+            !raw.contains("realizedPnl")
+                && !raw.contains("trade_result")
+                && !raw.contains("fill_orders")
+        );
+    }
+
+    #[test]
+    fn incomplete_foreign_duplicate_and_still_open_trade_evidence_never_claims_a_result() {
+        for case in 0..11 {
+            let result = trade_result_fixture("TP", |stage, raw| match (case, stage) {
+                (0, "uid") => raw["uid"] = json!("987"),
+                (1, "result_order") => raw["order"]["clientOrderId"] = json!("foreign"),
+                (2, "result_history") => raw["orders"][0]["positionID"] = json!("other"),
+                (3, "result_history") => raw["orders"][0]["status"] = json!("PARTIALLY_FILLED"),
+                (4, "result_fills") => raw["fill_orders"][0]["qty"] = json!(0.001),
+                (5, "result_fills") => raw["fill_orders"][0]["orderId"] = json!("other"),
+                (6, "result_fills") => {
+                    let row = raw["fill_orders"][0].clone();
+                    raw["fill_orders"].as_array_mut().unwrap().push(row);
+                }
+                (7, "result_fills") => raw["fill_orders"][0]["fee"] = Value::Null,
+                (8, "result_positions") => {
+                    *raw = json!([{"symbol":"BTC-USDT","positionId":"456","positionSide":"LONG","positionAmt":"0.01","avgPrice":"96.5"}])
+                }
+                (9, "result_open") => raw["orders"][0]["positionID"] = json!("456"),
+                (10, "result_history") => raw["orders"] = json!([]),
+                _ => {}
+            });
+            assert!(result.is_err(), "case {case} must not confirm a result");
+        }
+    }
+
     #[test]
     fn transient_candle_rejections_have_two_read_only_retries_per_action() {
         let now = 1_800_000_000_000_i64;
@@ -1911,6 +2509,43 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("not migrated"));
+    }
+
+    #[test]
+    fn explicit_start_uses_selected_symbol_and_preserves_previous_managed_identity_without_dispatch(
+    ) {
+        let c = managed("open", 0.0);
+        let previous = invoke(
+            "present",
+            serde_json::to_value(&c).unwrap(),
+            Value::Null,
+            Value::Null,
+            100_000_000,
+        );
+        let old = serde_json::to_value(&c.engine.entry).unwrap();
+        let mut settings = serde_json::to_value(&c.engine.settings).unwrap();
+        settings["symbol"] = json!("MNT-USDT");
+        settings["entry_margin"] = json!(2.0);
+        settings["stop_percent"] = json!(15.0);
+        settings["timeframes"] = json!("1m");
+        let raw = json!({"api_version":2,"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
+            "action":"start","state":c,"settings":settings,"observed_at_ms":100_000_001,"execution":{"running":true}});
+        let out: Value =
+            serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap();
+        assert_eq!(out["status"], "executed", "{out}");
+        assert_eq!(out["result"]["state"]["engine"]["settings"], settings);
+        // A remote Start may reuse the previous workflow declaration. Mutable
+        // choices belong in settings/fields, not a second copy in its prose.
+        assert_eq!(
+            out["result"]["view"]["schedule"],
+            previous["result"]["view"]["schedule"]
+        );
+        for field in out["result"]["view"]["fields"].as_array().unwrap() {
+            assert_eq!(field["value"], settings[field["id"].as_str().unwrap()]);
+        }
+        assert!(out["result"]["state"]["engine"]["entry"].is_null());
+        assert_eq!(out["result"]["state"]["engine"]["parked"][0]["entry"], old);
+        assert!(out["result"]["requests"].as_array().unwrap().is_empty());
     }
 
     #[test]
@@ -2048,6 +2683,37 @@ mod tests {
         assert!(request_for(&mut c, &mut w, 100_000_001).is_err());
         assert_eq!(c.intents.len(), 1);
     }
+    #[test]
+    fn restart_before_dispatch_checkpoint_recovers_as_not_sent_but_keeps_uncertain_delivery() {
+        for dispatched in [false, true] {
+            let mut c = managed("open", 0.0);
+            c.engine.entry.as_mut().unwrap().evidence = None;
+            let plan = e(&c)["entry"]["plan"].clone();
+            if dispatched {
+                c.intents
+                    .insert(entry_id(&plan), "order.entry.place".into());
+            }
+            let reopened = invoke(
+                "open",
+                serde_json::to_value(&c).unwrap(),
+                Value::Null,
+                Value::Null,
+                100_000_001,
+            );
+            assert_eq!(reopened["status"], "executed");
+            let receipt = &reopened["result"]["state"]["engine"]["entry"]["evidence"];
+            if dispatched {
+                assert!(receipt.is_null());
+            } else {
+                assert_eq!(receipt["status"], "not_sent");
+            }
+            assert!(reopened["result"]["requests"]
+                .as_array()
+                .unwrap()
+                .is_empty());
+        }
+    }
+
     #[test]
     fn one_unknown_mutation_is_checkpointed_then_only_queried_after_restart() {
         let now = 100_000_001;

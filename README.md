@@ -141,6 +141,24 @@ Local ZIP installation remains a development path.
   a failed read require fresh observation. An observed stop does not guarantee
   execution price or a maximum loss. This is observation, not automatic repair
   of missing or incorrectly sized protection.
+  The current 0.2.3 source adds a last-trade result through the same HTTP workflow:
+  exact entry and closing fills, average prices, signed fees/rebates and realized
+  PnL after trading fees (funding excluded). Full TP requires the known reducing
+  exit's actual fills to cover the entry and fresh absence of its position and
+  matching open orders. SL requires matching-position stop fills; other/mixed
+  closure stays distinct. Missing, truncated or contradictory history remains
+  unconfirmed and does not block current trade management. Only one owned-trade
+  locator survives restart; service fills and computed results are transient
+  and reacquired. No history archive or host API operation is added.
+  Restart before the durable HTTP dispatch marker is proven not sent; once that
+  marker exists, missing service evidence remains uncertain and cannot trigger
+  a second send. Explicit Start uses the newly selected instrument even when
+  replacing a running executor; retained orders keep their original identities
+  and plans. Its permission description covers the workflow without duplicating
+  the mutable instrument or limits; selected settings and workspace fields own
+  those values, including when Start reuses the preceding workflow declaration.
+  The published Discovery version above remains unchanged until
+  a separately authorized release and packaged/live acceptance.
   Entry stops remain attached to the entry request; fill-based amendment is
   outside the owner-selected scope. Actual full TP/SL closure and continuous
   VPS operation still require qualification. No live
