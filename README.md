@@ -106,6 +106,11 @@ Local ZIP installation remains a development path.
 - `hivra.contract.moltbook-ambassador.v1` (bounded observation and deterministic
   assisted post/reply preparation; the package owns its service protocol and
   workflow, and the host executes requests within the owner's grants)
+  Source candidate 0.8.5 reads commit files in six-file GitHub pages, passing
+  documentation before selecting bounded product evidence. It marks incomplete
+  excerpts/file lists and stops visibly at its page budget. This repairs news
+  preparation from large commits without increasing host limits or rebuilding
+  Capsule. The published Discovery package remains 0.8.4 until a separate release.
 - `hivra.contract.jack-ventura.v1`: JackV `3b81753` line formation and a
   package-owned workspace through common API v2. The package owns service
   requests, account binding, entry/exit planning, response parsing and recovery;
