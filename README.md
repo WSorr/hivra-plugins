@@ -149,7 +149,7 @@ Local ZIP installation remains a development path.
   a failed read require fresh observation. An observed stop does not guarantee
   execution price or a maximum loss. This is observation, not automatic repair
   of missing or incorrectly sized protection.
-  The current 0.2.3 source adds a last-trade result through the same HTTP workflow:
+  The current 0.2.4 source reads a last-trade result through the same HTTP workflow:
   exact entry and closing fills, average prices, signed fees/rebates and realized
   PnL after trading fees (funding excluded). Full TP requires the known reducing
   exit's actual fills to cover the entry and fresh absence of its position and
@@ -158,6 +158,13 @@ Local ZIP installation remains a development path.
   unconfirmed and does not block current trade management. Only one owned-trade
   locator survives restart; service fills and computed results are transient
   and reacquired. No history archive or host API operation is added.
+  BingX linear fills use UTC `filledTm`, base-coin `volume`, signed
+  `commission` and settlement `currency`. Trading PnL is calculated from the
+  complete matched entry/exit quantities and prices; no missing `realizedPnl`
+  field is invented. Indistinguishable duplicate rows, incomplete quantities,
+  invalid times and missing/non-USDT fee currency keep the result unconfirmed.
+  This replaces the unsupported fill-field assumptions in the prior candidate;
+  the checkpoint and common host contract are unchanged.
   Restart before the durable HTTP dispatch marker is proven not sent; once that
   marker exists, missing service evidence remains uncertain and cannot trigger
   a second send. Explicit Start uses the newly selected instrument even when
