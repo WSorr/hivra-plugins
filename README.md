@@ -149,7 +149,12 @@ Local ZIP installation remains a development path.
   a failed read require fresh observation. An observed stop does not guarantee
   execution price or a maximum loss. This is observation, not automatic repair
   of missing or incorrectly sized protection.
-  The current 0.2.4 source reads a last-trade result through the same HTTP workflow:
+  Market reconstruction uses at most 600 closed candles per timeframe. If its
+  leading page is short, one public contract read must prove that listing began
+  inside that window before Jack re-reads from the listing candle. Empty or
+  gapped history after listing still fails; no candle or older freshness is
+  invented. Listing metadata remains transient, with the same checkpoint/API.
+  The current 0.2.5 source reads a last-trade result through the same HTTP workflow:
   exact entry and closing fills, average prices, signed fees/rebates and realized
   PnL after trading fees (funding excluded). Full TP requires the known reducing
   exit's actual fills to cover the entry and fresh absence of its position and

@@ -1259,6 +1259,11 @@ fn request_for(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Option<Value>> {
             let span = duration(tf)?;
             let current = at - at % span;
             let mut p = params(&[("symbol", text(&j["symbol"])?), ("interval", tf.into())]);
+            if j["stage"] == "history_contract" {
+                p.remove("interval");
+                w.job = Some(j);
+                return Ok(Some(http(w, CONTRACT, "GET", p, false, now)));
+            }
             if j["stage"] == "quote" {
                 p.insert("limit".into(), "2".into());
             } else {
@@ -1496,6 +1501,34 @@ fn receive(c: &mut Checkpoint, w: &mut Work, result: &Value, now: i64) -> R<()> 
         let at = j["at"].as_i64().unwrap();
         let span = duration(j["timeframe"].as_str().unwrap())?;
         let current = at - at % span;
+        if j["stage"] == "history_contract" {
+            let contracts = raw.as_array().ok_or("Missing contract launch evidence")?;
+            let matches: Vec<_> = contracts
+                .iter()
+                .filter(|r| r["symbol"] == j["symbol"])
+                .collect();
+            let launch = if matches.len() == 1 {
+                matches[0]["launchTime"]
+                    .as_i64()
+                    .filter(|t| *t > 0 && *t <= at)
+            } else {
+                None
+            }
+            .ok_or("Missing or ambiguous contract launch evidence")?;
+            let first = launch - launch % span;
+            if first <= j["first"].as_i64().unwrap() || first >= current {
+                return Err(
+                    "Incomplete candle history after contract launch; no effect sent".into(),
+                );
+            }
+            // Only authoritative listing evidence may shorten the leading
+            // window. Re-read it normally; internal gaps still fail closed.
+            j["first"] = json!(first);
+            j["stage"] = json!("history");
+            w.candle_wait = true;
+            w.job = Some(j);
+            return Ok(());
+        }
         let rows = bars(&raw)?;
         if j["stage"] == "quote" {
             let latest = rows.last().ok_or("Missing current candle")?;
@@ -1511,6 +1544,13 @@ fn receive(c: &mut Checkpoint, w: &mut Work, result: &Value, now: i64) -> R<()> 
             let start = j["first"].as_i64().unwrap() + w.page as i64 * span;
             let expected =
                 ((j["last"].as_i64().unwrap() - start) / span + 1).clamp(0, CANDLE_PAGE) as usize;
+            if rows.len() < expected && w.page == 0 && j["launch_checked"] != true {
+                j["launch_checked"] = json!(true);
+                j["stage"] = json!("history_contract");
+                w.candle_wait = true;
+                w.job = Some(j);
+                return Ok(());
+            }
             if rows.len() != expected
                 || rows
                     .iter()
@@ -2610,19 +2650,157 @@ mod tests {
                 if gapped {
                     rows.remove(0);
                 }
-                let result = receive(
+                let mut result = receive(
                     &mut c,
                     &mut w,
                     &json!({"outcome":"response","status":200,
                     "body":json!({"code":0,"data":rows}).to_string()}),
                     current,
                 );
+                if gapped {
+                    // A short leading page is not accepted without service
+                    // evidence that the contract did not exist before it.
+                    assert!(w.rows.is_empty());
+                    result = receive(
+                        &mut c,
+                        &mut w,
+                        &json!({"outcome":"response","status":200,
+                        "body":json!({"code":0,"data":[{"symbol":"ACH-USDT","launchTime":start-span}]}).to_string()}),
+                        current,
+                    );
+                }
                 assert_eq!(result.is_ok(), !gapped);
                 if !gapped {
                     assert_eq!(w.rows.len(), count.min(CANDLE_PAGE) as usize);
                     assert!(w.rows.iter().all(|r| r[0].as_i64().unwrap() < current));
                 }
             }
+        }
+    }
+    #[test]
+    fn recently_listed_contract_history_is_reread_from_verified_launch_after_restart() {
+        let now = 1_800_000_000_000_i64;
+        let span = 86_400_000;
+        let current = now - now % span;
+        let first = current - 600 * span;
+        // Empty first page, or a listing inside the first page.
+        for age in [458, 550] {
+            let listed = current - age * span;
+            let mut c = Checkpoint::default();
+            let original = serde_json::to_value(&c).unwrap();
+            let mut w = Work {
+                job: Some(json!({"kind":"market.candles.read","symbol":"MNT-USDT",
+                    "timeframe":"1d","stage":"history","at":now,"first":first,"last":current-span})),
+                ..Work::default()
+            };
+            let leading: Vec<_> = (listed..first + CANDLE_PAGE * span)
+                .step_by(span as usize)
+                .map(|t| json!([t, 100, 101, 99, 100]))
+                .collect();
+            receive(
+                &mut c,
+                &mut w,
+                &json!({"outcome":"response","status":200,
+                "body":json!({"code":0,"data":leading}).to_string()}),
+                now,
+            )
+            .unwrap();
+            assert!(w.rows.is_empty());
+            // No persistent service metadata or alternate owner is needed.
+            let mut w: Work = serde_json::from_value(serde_json::to_value(w).unwrap()).unwrap();
+            assert_eq!(
+                request_for(&mut c, &mut w, now).unwrap().unwrap()["kind"],
+                "runtime.wait"
+            );
+            let contract = request_for(&mut c, &mut w, now).unwrap().unwrap();
+            assert!(contract["url"].as_str().unwrap().contains(CONTRACT));
+            assert_eq!(contract["method"], "GET");
+            assert!(contract["credential"].is_null());
+            receive(&mut c,&mut w,&json!({"outcome":"response","status":200,
+                "body":json!({"code":0,"data":[{"symbol":"MNT-USDT","launchTime":listed+span/6}]}).to_string()}),now).unwrap();
+            assert_eq!(
+                request_for(&mut c, &mut w, now).unwrap().unwrap()["kind"],
+                "runtime.wait"
+            );
+            let history = request_for(&mut c, &mut w, now).unwrap().unwrap();
+            assert!(history["url"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("startTime={listed}")));
+            let rows: Vec<_> = (0..CANDLE_PAGE)
+                .map(|i| json!([listed + i * span, 100, 101, 99, 100]))
+                .collect();
+            for missing in [0, 12] {
+                let mut incomplete = rows.clone();
+                incomplete.remove(missing);
+                let mut resumed: Work =
+                    serde_json::from_value(serde_json::to_value(&w).unwrap()).unwrap();
+                assert!(receive(
+                    &mut c,
+                    &mut resumed,
+                    &json!({"outcome":"response","status":200,
+                    "body":json!({"code":0,"data":incomplete}).to_string()}),
+                    now
+                )
+                .is_err());
+            }
+            receive(
+                &mut c,
+                &mut w,
+                &json!({"outcome":"response","status":200,
+                "body":json!({"code":0,"data":rows}).to_string()}),
+                now,
+            )
+            .unwrap();
+            assert_eq!(w.rows.len(), CANDLE_PAGE as usize);
+            assert_eq!(w.page, CANDLE_PAGE as usize);
+            assert_eq!(serde_json::to_value(c).unwrap(), original);
+            assert!(w.job.as_ref().unwrap()["launch_checked"] == true);
+            // The next short page is a gap, never another trimming attempt.
+            let mut job = w.job.take().unwrap();
+            job["stage"] = json!("history");
+            w.job = Some(job);
+            assert!(receive(
+                &mut Checkpoint::default(),
+                &mut w,
+                &json!({"outcome":"response","status":200,
+                "body":"{\"code\":0,\"data\":[]}"}),
+                now
+            )
+            .is_err());
+        }
+    }
+    #[test]
+    fn absent_foreign_ambiguous_or_unhelpful_listing_evidence_cannot_trim_history() {
+        let now = 1_800_000_000_000_i64;
+        let span = 86_400_000;
+        let current = now - now % span;
+        let first = current - 600 * span;
+        for data in [
+            json!([]),
+            json!([{"symbol":"OTHER-USDT","launchTime":first+span}]),
+            json!([{"symbol":"MNT-USDT"}]),
+            json!([{"symbol":"MNT-USDT","launchTime":now+1}]),
+            json!([{"symbol":"MNT-USDT","launchTime":first-span}]),
+            json!([{"symbol":"MNT-USDT","launchTime":current}]),
+            json!([{"symbol":"MNT-USDT","launchTime":first+span},{"symbol":"MNT-USDT","launchTime":first+span}]),
+        ] {
+            let mut c = Checkpoint::default();
+            let mut w = Work {
+                job: Some(json!({"kind":"market.candles.read","symbol":"MNT-USDT",
+                "timeframe":"1d","stage":"history_contract","at":now,"first":first,
+                "last":current-span,"launch_checked":true})),
+                ..Work::default()
+            };
+            assert!(receive(
+                &mut c,
+                &mut w,
+                &json!({"outcome":"response","status":200,
+                "body":json!({"code":0,"data":data}).to_string()}),
+                now
+            )
+            .is_err());
+            assert!(w.rows.is_empty());
         }
     }
     #[test]
