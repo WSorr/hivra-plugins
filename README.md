@@ -154,7 +154,11 @@ Local ZIP installation remains a development path.
   inside that window before Jack re-reads from the listing candle. Empty or
   gapped history after listing still fails; no candle or older freshness is
   invented. Listing metadata remains transient, with the same checkpoint/API.
-  The current 0.2.5 source reads a last-trade result through the same HTTP workflow:
+  Candle reads retain two bounded retries per action. A rate rejection increases
+  cooldown from five to ten seconds and slows remaining pages through the existing
+  wait capability; rejected pages are not consumed or treated as complete. No
+  retry is added for trading mutations.
+  The current 0.2.6 source reads a last-trade result through the same HTTP workflow:
   exact entry and closing fills, average prices, signed fees/rebates and realized
   PnL after trading fees (funding excluded). Full TP requires the known reducing
   exit's actual fills to cover the entry and fresh absence of its position and
