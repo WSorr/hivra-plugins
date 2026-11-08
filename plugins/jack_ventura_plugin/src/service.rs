@@ -363,6 +363,63 @@ fn signed_number(value: &Value) -> R<f64> {
         .ok_or_else(|| "Invalid trade accounting number".into())
 }
 
+fn fill_time(value: &Value) -> R<i64> {
+    // allFillOrders supplies UTC filledTm; filledTime is its local-time display.
+    let raw = value.as_str().ok_or("Missing fill time")?;
+    let b = raw.as_bytes();
+    if b.len() != 24
+        || [4, 7, 10, 13, 16, 19, 23]
+            .into_iter()
+            .zip(b"--T::.Z")
+            .any(|(i, separator)| b[i] != *separator)
+    {
+        return Err("Invalid UTC fill time".into());
+    }
+    let part = |start: usize, end: usize| -> R<i64> {
+        if !b[start..end].iter().all(u8::is_ascii_digit) {
+            return Err("Invalid UTC fill time".into());
+        }
+        raw[start..end]
+            .parse()
+            .map_err(|_| "Invalid UTC fill time".into())
+    };
+    let (year, month, day) = (part(0, 4)?, part(5, 7)?, part(8, 10)?);
+    let (hour, minute, second, millis) =
+        (part(11, 13)?, part(14, 16)?, part(17, 19)?, part(20, 23)?);
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let months = [
+        31_i64,
+        28 + i64::from(leap),
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    if !(1970..=9999).contains(&year)
+        || !(1..=12).contains(&month)
+        || !(1..=months[(month - 1) as usize]).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 59
+    {
+        return Err("Invalid UTC fill time".into());
+    }
+    let days = 365 * (year - 1970) + (year - 1) / 4 - 1969 / 4 - (year - 1) / 100
+        + 1969 / 100
+        + (year - 1) / 400
+        - 1969 / 400
+        + months[..(month - 1) as usize].iter().sum::<i64>()
+        + day
+        - 1;
+    Ok((((days * 24 + hour) * 60 + minute) * 60 + second) * 1000 + millis)
+}
+
 fn position_id(row: &Value) -> Option<String> {
     row.get("positionId")
         .or_else(|| row.get("positionID"))
@@ -496,7 +553,7 @@ fn receive_trade_result(
                 return Err("Too many closing orders for bounded trade result".into());
             }
             j["index"] = json!(0);
-            j["totals"] = json!({"entry_qty":0.,"entry_cost":0.,"exit_qty":0.,"exit_cost":0.,"fee":0.,"pnl":0.,"TP":0.,"SL":0.,"Other":0.});
+            j["totals"] = json!({"entry_qty":0.,"entry_cost":0.,"exit_qty":0.,"exit_cost":0.,"fee":0.,"TP":0.,"SL":0.,"Other":0.});
             j["stage"] = json!("result_fills");
         }
         "result_fills" => {
@@ -513,23 +570,28 @@ fn receive_trade_result(
             let mut ids = std::collections::BTreeSet::new();
             let mut quantity = 0.;
             for r in rows {
-                let at = r["time"].as_i64().ok_or("Missing fill time")?;
+                let at = fill_time(&r["filledTm"])?;
                 if r["symbol"] != t["symbol"]
                     || text(&r["orderId"])? != text(&order["id"])?
                     || r["side"] != order["side"]
-                    || !ids.insert(text(&r["tradeId"])?)
                     || at < t["from"].as_i64().unwrap()
                     || at > t["closed_at"].as_i64().unwrap()
-                    || r.get("feeAsset").is_some_and(|asset| asset != "USDT")
+                    || r["currency"] != "USDT"
                 {
                     return Err(
                         "Fill identity, time or fee currency does not match the trade".into(),
                     );
                 }
-                let qty = number(&r["qty"])?;
+                let qty = number(&r["volume"])?;
                 let price = number(&r["price"])?;
+                let fee = signed_number(&r["commission"])?;
                 if qty == 0. || price == 0. {
                     return Err("Empty trade fill".into());
+                }
+                // This endpoint has no fill ID. Indistinguishable rows cannot
+                // prove distinct executions, so never count them twice.
+                if !ids.insert(hash(&json!([at, qty, price, fee]))) {
+                    return Err("Duplicate or indistinguishable trade fills".into());
                 }
                 quantity += qty;
                 let prefix = if order["kind"] == "entry" {
@@ -540,8 +602,7 @@ fn receive_trade_result(
                 for (key, value) in [
                     (format!("{prefix}_qty"), qty),
                     (format!("{prefix}_cost"), qty * price),
-                    ("fee".into(), signed_number(&r["fee"])?),
-                    ("pnl".into(), signed_number(&r["realizedPnl"])?),
+                    ("fee".into(), fee),
                 ] {
                     let total = signed_number(&j["totals"][&key])? + value;
                     if !total.is_finite() {
@@ -604,6 +665,10 @@ fn receive_trade_result(
             }
             let a = &j["totals"];
             let qty = number(&a["entry_qty"])?;
+            // Linear USDT contracts: complete matched base-quantity executions
+            // establish trading PnL without inventing a missing service field.
+            let pnl = (number(&a["exit_cost"])? - number(&a["entry_cost"])?)
+                * if t["side"] == "long" { 1.0 } else { -1.0 };
             let reason = if same_price(number(&a["TP"])?, qty) {
                 "TP"
             } else if same_price(number(&a["SL"])?, qty) {
@@ -613,8 +678,8 @@ fn receive_trade_result(
             };
             w.trade_result = json!({"confirmed":true,"summary":format!("{} · {} {}\nAverage entry {} → exit {}\nRealized PnL {:+.6} USDT · fees/rebates {:+.6} USDT\nAfter trading fees {:+.6} USDT · funding excluded",
                 reason,qty,text(&t["symbol"])?,number(&a["entry_cost"])?/qty,number(&a["exit_cost"])?/qty,
-                signed_number(&a["pnl"])?,signed_number(&a["fee"])?,signed_number(&a["pnl"])?+signed_number(&a["fee"])?),
-                "details":format!("Last trade: exchange fills read at {}. Position {}. Orders {}. Matching position and open orders absent; funding is not included.",now,
+                pnl,signed_number(&a["fee"])?,pnl+signed_number(&a["fee"])?),
+                "details":format!("Last trade: exchange fills read at {}. Position {}. Orders {}. Trading PnL calculated from matched linear USDT fills. Matching position and open orders absent; funding is not included.",now,
                     j["position_id"].as_str().unwrap_or("unavailable"),j["orders"].as_array().unwrap().iter().map(|o| text(&o["id"]).unwrap()).collect::<Vec<_>>().join(", "))});
             w.pending = None;
             return Ok(());
@@ -2211,19 +2276,22 @@ mod tests {
     }
     fn trade_result_fixture(
         reason: &str,
+        side: &str,
         mut change: impl FnMut(&str, &mut Value),
     ) -> R<(Checkpoint, Work)> {
-        let now = 100_000_001;
+        let now = 1_793_916_970_001;
         let mut c = managed("filled", 1.0);
         let plan = serde_json::to_value(&c.engine.entry.as_ref().unwrap().plan).unwrap();
         let qty = number(&plan["quantity"])?;
         c.last_trade = Some(
-            json!({"account_id":plan["account_id"],"symbol":plan["symbol"],"side":"long",
+            json!({"account_id":plan["account_id"],"symbol":plan["symbol"],"side":side,
             "from":now-1000,"closed_at":now,"entry_id":"123","client_id":"b".repeat(40),
             "position_id":"456","quantity":qty,"tp_id":if reason=="TP" {json!("999")} else {Value::Null}}),
         );
         c.engine.entry = None;
         let original = serde_json::to_value(&c).unwrap();
+        let opening = if side == "long" { "BUY" } else { "SELL" };
+        let closing = if side == "long" { "SELL" } else { "BUY" };
         let mut w = Work::default();
         queue_trade_result(&c, &mut w);
         for _ in 0..16 {
@@ -2242,11 +2310,11 @@ mod tests {
                 "uid" => json!({"uid":"123456789"}),
                 "result_order" => {
                     json!({"order":{"orderId":"123","clientOrderId":"b".repeat(40),"symbol":"BTC-USDT",
-                    "side":"BUY","status":"FILLED","executedQty":qty,"positionID":"456"}})
+                    "side":opening,"status":"FILLED","executedQty":qty,"positionID":"456"}})
                 }
                 "result_history" => {
-                    json!({"orders":[{"orderId":"999","positionID":"456","symbol":"BTC-USDT","side":"SELL",
-                    "positionSide":"LONG","status":"FILLED","executedQty":qty,"type":if reason=="SL" {"STOP_MARKET"} else if reason=="TP" {"LIMIT"} else {"MARKET"}},
+                    json!({"orders":[{"orderId":"999","positionID":"456","symbol":"BTC-USDT","side":closing,
+                    "positionSide":if side=="long" {"LONG"} else {"SHORT"},"status":"FILLED","executedQty":qty,"type":if reason=="SL" {"STOP_MARKET"} else if reason=="TP" {"LIMIT"} else {"MARKET"}},
                     {"orderId":"789","positionID":"other","symbol":"BTC-USDT","side":"SELL","executedQty":qty}]})
                 }
                 "result_fills" => {
@@ -2256,9 +2324,10 @@ mod tests {
                             && url.contains("tradingUnit=COIN")
                     );
                     let entry = url.contains("orderId=123&");
-                    json!({"fill_orders":[{"tradeId":if entry {"1"} else {"2"},"orderId":if entry {"123"} else {"999"},
-                        "symbol":"BTC-USDT","side":if entry {"BUY"} else {"SELL"},"qty":qty,
-                        "price":if entry {96.5} else {105.0},"fee":if entry {-0.01} else {-0.02},"realizedPnl":if entry {0.0} else {8.5*qty},"time":now-1}]})
+                    json!({"fill_orders":[{"orderId":if entry {"123"} else {"999"},
+                        "symbol":"BTC-USDT","side":if entry {opening} else {closing},"volume":qty.to_string(),
+                        "price":if entry {"96.5"} else {"105.0"},"commission":if entry {"-0.01"} else {"-0.02"},"currency":"USDT",
+                        "filledTm":"2026-11-05T22:16:10.000Z","filledTime":"2026-11-06T06:16:10.000+08:00"}]})
                 }
                 "result_positions" => json!([]),
                 "result_open" => {
@@ -2284,32 +2353,93 @@ mod tests {
 
     #[test]
     fn closed_trade_reads_exact_fills_fees_and_reason_without_archiving_service_history() {
-        for reason in ["TP", "SL", "Other"] {
-            let (c, mut w) = trade_result_fixture(reason, |_, _| {}).unwrap();
-            assert!(w.trade_result["summary"]
-                .as_str()
-                .unwrap()
-                .starts_with(reason));
-            assert!(w.trade_result["summary"]
-                .as_str()
-                .unwrap()
-                .contains("-0.030000"));
-            assert!(w.trade_result["details"]
-                .as_str()
-                .unwrap()
-                .contains("123, 999"));
-            // Reopen loses transient observations, retains only the locator.
-            let mut restarted: Checkpoint =
-                serde_json::from_value(serde_json::to_value(&c).unwrap()).unwrap();
-            w = Work::default();
-            queue_trade_result(&restarted, &mut w);
-            assert!(w.trade_result.is_null());
-            assert!(request_for(&mut restarted, &mut w, 100_000_002)
-                .unwrap()
-                .unwrap()["url"]
-                .as_str()
-                .unwrap()
-                .contains(UID));
+        for side in ["long", "short"] {
+            for reason in ["TP", "SL", "Other"] {
+                let (c, mut w) = trade_result_fixture(reason, side, |_, _| {}).unwrap();
+                assert!(w.trade_result["summary"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with(reason));
+                assert!(w.trade_result["summary"]
+                    .as_str()
+                    .unwrap()
+                    .contains("-0.030000"));
+                let qty = number(&c.last_trade.as_ref().unwrap()["quantity"]).unwrap();
+                let pnl = 8.5 * qty * if side == "long" { 1.0 } else { -1.0 };
+                assert!(w.trade_result["summary"]
+                    .as_str()
+                    .unwrap()
+                    .contains(&format!("Realized PnL {pnl:+.6}")));
+                assert!(w.trade_result["summary"]
+                    .as_str()
+                    .unwrap()
+                    .contains(&format!("After trading fees {:+.6}", pnl - 0.03)));
+                assert!(w.trade_result["details"]
+                    .as_str()
+                    .unwrap()
+                    .contains("123, 999"));
+                // Reopen loses transient observations, retains only the locator.
+                let mut restarted: Checkpoint =
+                    serde_json::from_value(serde_json::to_value(&c).unwrap()).unwrap();
+                w = Work::default();
+                queue_trade_result(&restarted, &mut w);
+                assert!(w.trade_result.is_null());
+                assert!(request_for(&mut restarted, &mut w, 1_793_916_970_002)
+                    .unwrap()
+                    .unwrap()["url"]
+                    .as_str()
+                    .unwrap()
+                    .contains(UID));
+            }
+        }
+    }
+
+    #[test]
+    fn distinct_partial_fills_preserve_weighted_prices_and_signed_rebates() {
+        let (c, w) = trade_result_fixture("TP", "long", |stage, raw| {
+            if stage != "result_fills" {
+                return;
+            }
+            let mut first = raw["fill_orders"][0].clone();
+            first["volume"] = json!(number(&first["volume"]).unwrap() / 2.0);
+            first["commission"] = json!(0.005);
+            let mut second = first.clone();
+            first["filledTm"] = json!("2026-11-05T22:16:09.500Z");
+            second["price"] = json!(number(&second["price"]).unwrap() + 2.0);
+            *raw = json!({"fill_orders":[first,second]});
+        })
+        .unwrap();
+        let qty = number(&c.last_trade.as_ref().unwrap()["quantity"]).unwrap();
+        let result = w.trade_result["summary"].as_str().unwrap();
+        assert!(result.contains("Average entry 97.5 → exit 106"));
+        assert!(result.contains("fees/rebates +0.020000"));
+        assert!(result.contains(&format!("After trading fees {:+.6}", 8.5 * qty + 0.02)));
+    }
+
+    #[test]
+    fn fill_timestamps_keep_utc_milliseconds_and_reject_impossible_dates() {
+        for (raw, expected) in [
+            ("1970-01-01T00:00:00.000Z", 0),
+            ("2000-02-29T00:00:00.001Z", 951_782_400_001),
+            ("2024-02-29T00:00:00.000Z", 1_709_164_800_000),
+            ("2026-11-05T22:16:10.000Z", 1_793_916_970_000),
+        ] {
+            assert_eq!(fill_time(&json!(raw)).unwrap(), expected);
+        }
+        for raw in [
+            "2026-02-29T00:00:00.000Z",
+            "2100-02-29T00:00:00.000Z",
+            "2026-00-01T00:00:00.000Z",
+            "2026-13-01T00:00:00.000Z",
+            "2026-04-31T00:00:00.000Z",
+            "2026-11-05T24:00:00.000Z",
+            "2026-11-05T22:60:00.000Z",
+            "2026-11-05T22:16:60.000Z",
+            "2026-11-05T22:16:10.000+08:00",
+            "2026-11-05T22:16:10Z",
+            "é026-11-05T22:16:10.000Z",
+        ] {
+            assert!(fill_time(&json!(raw)).is_err(), "{raw}");
         }
     }
 
@@ -2356,24 +2486,33 @@ mod tests {
 
     #[test]
     fn incomplete_foreign_duplicate_and_still_open_trade_evidence_never_claims_a_result() {
-        for case in 0..11 {
-            let result = trade_result_fixture("TP", |stage, raw| match (case, stage) {
+        for case in 0..16 {
+            let result = trade_result_fixture("TP", "long", |stage, raw| match (case, stage) {
                 (0, "uid") => raw["uid"] = json!("987"),
                 (1, "result_order") => raw["order"]["clientOrderId"] = json!("foreign"),
                 (2, "result_history") => raw["orders"][0]["positionID"] = json!("other"),
                 (3, "result_history") => raw["orders"][0]["status"] = json!("PARTIALLY_FILLED"),
-                (4, "result_fills") => raw["fill_orders"][0]["qty"] = json!(0.001),
+                (4, "result_fills") => raw["fill_orders"][0]["volume"] = json!(0.001),
                 (5, "result_fills") => raw["fill_orders"][0]["orderId"] = json!("other"),
                 (6, "result_fills") => {
                     let row = raw["fill_orders"][0].clone();
                     raw["fill_orders"].as_array_mut().unwrap().push(row);
                 }
-                (7, "result_fills") => raw["fill_orders"][0]["fee"] = Value::Null,
+                (7, "result_fills") => raw["fill_orders"][0]["commission"] = Value::Null,
                 (8, "result_positions") => {
                     *raw = json!([{"symbol":"BTC-USDT","positionId":"456","positionSide":"LONG","positionAmt":"0.01","avgPrice":"96.5"}])
                 }
                 (9, "result_open") => raw["orders"][0]["positionID"] = json!("456"),
                 (10, "result_history") => raw["orders"] = json!([]),
+                (11, "result_fills") => raw["fill_orders"][0]["currency"] = json!("USDC"),
+                (12, "result_fills") => raw["fill_orders"][0]["filledTm"] = Value::Null,
+                (13, "result_fills") => {
+                    raw["fill_orders"][0]["filledTm"] = json!("2026-11-05T22:16:11.000Z")
+                }
+                (14, "result_fills") => {
+                    raw["fill_orders"][0]["filledTm"] = json!("2026-11-05T22:16:08.000Z")
+                }
+                (15, "result_fills") => raw["fill_orders"][0]["currency"] = Value::Null,
                 _ => {}
             });
             assert!(result.is_err(), "case {case} must not confirm a result");
