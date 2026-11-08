@@ -78,6 +78,7 @@ struct Work {
     answered: Vec<String>,
     provider: String,
     model: String,
+    read_retry: Option<(Value, u8)>,
 }
 fn string(v: &Value) -> &str {
     v.as_str().unwrap_or("")
@@ -129,13 +130,23 @@ fn view(w: &Work, message: &str) -> Value {
     } else {
         format!("{} · observed {} recent posts, {} recent comments, {} conversation comments. Service history is read afresh; no local drafts or journal.",w.actor,w.posts.len(),w.own_comments.len(),w.comments.len())
     };
+    let mut actions = vec![
+        json!({"id":"start","label":if w.running {"Run cycle now"} else {"Start automatic cycle"},"host":"workspace.start"}),
+    ];
+    if w.running {
+        actions.push(json!({"id":"stop","label":"Stop and revoke access","host":"workspace.stop"}));
+    }
+    actions.extend([
+        json!({"id":"preview","label":"Prepare without sending"}),
+        json!({"id":"connect","label":"Connection and permissions","host":"workspace.authorize"}),
+    ]);
     json!({"title":"Moltbook","message":message,"summary":summary,"details_title":"Service result and prepared content","details":format!("{}{}{}",if w.draft.is_null() {String::new()} else {format!("{}\n\nAI: {} / {}",serde_json::to_string_pretty(&w.draft).unwrap(),w.provider,w.model)},if w.created_id.is_empty(){String::new()}else{format!("\n\nService content ID: {}\nVerification challenge: {}",w.created_id,string(&w.challenge["challenge_text"]))},if w.verification_math.is_null(){String::new()}else{format!("\nVerification arithmetic: {}",w.verification_math)}),"fields":[
         {"id":"repository","label":"Public GitHub owner/repository","type":"text","value":w.settings.repository},
         {"id":"community","label":"Community","type":"text","value":w.settings.community},
         {"id":"instructions","label":"Editorial instructions","type":"text","value":w.settings.instructions},
         {"id":"interval_minutes","label":"Cycle interval (minutes)","type":"integer","value":w.settings.interval_minutes},
         {"id":"mode","label":"Workflow","type":"choice","value":w.settings.mode,"source":{"action":"modes"}}
-    ],"actions":[{"id":"connect","label":"Connect","host":"workspace.authorize"},{"id":"preview","label":"Prepare without sending"},{"id":"start","label":"Start","host":"workspace.start"},{"id":"stop","label":"Revoke permissions","host":"workspace.stop"}],"rows":[],"columns":[],"access":access(),"schedule":{"version":2,"action":"cycle","interval_seconds":w.settings.interval_minutes*60,"description":"Read fresh service history, use the owner's Analyst AI, and run the selected publication/reply workflow. The service owns accepted content and limits. No local history is retained. A lost acknowledgement cannot guarantee exactly-once delivery across restart.","access":access()}})
+    ],"actions":actions,"rows":[],"columns":[],"access":access(),"schedule":{"version":2,"action":"cycle","interval_seconds":w.settings.interval_minutes*60,"description":"Read fresh service history, use the owner's Analyst AI, and run the selected publication/reply workflow. The service owns accepted content and limits. No local history is retained. A lost acknowledgement cannot guarantee exactly-once delivery across restart.","access":access()}})
 }
 fn output(w: Work, message: &str, request: Option<Value>) -> Value {
     let v = view(&w, message);
@@ -153,6 +164,7 @@ fn http(w: &mut Work, stage: &str, method: &str, url: String, body: Option<Value
         r["headers"]["Content-Type"] = json!("application/json");
         r["body"] = json!(body.to_string());
     }
+    w.read_retry = (method == "GET").then(|| (r.clone(), 0));
     r
 }
 fn read(w: &mut Work, stage: &str, path: &str) -> Value {
@@ -160,15 +172,32 @@ fn read(w: &mut Work, stage: &str, path: &str) -> Value {
 }
 fn infer(w: &mut Work, stage: &str, instructions: &str, input: Value, max: usize) -> Value {
     w.stage = stage.into();
+    w.read_retry = None;
     json!({"kind":"ai.infer","id":stage,"continuation":"receive","instructions":instructions,"input":input,"max_output_bytes":max})
 }
 fn response(result: &Value) -> Result<Value> {
+    let service = match string(&result["id"]) {
+        "source" => "GitHub commit list",
+        "source_detail" => "GitHub changed files",
+        "me" => "Moltbook connection",
+        "home" => "Moltbook activity",
+        "history" | "publications" | "preflight_news" | "uncertain" => "Moltbook history",
+        "conversation" | "preflight_reply" | "receipt_comments" => "Moltbook comments",
+        "create" => "Moltbook publication",
+        "verify" => "Moltbook verification",
+        _ => "Moltbook",
+    };
     if result["outcome"] != "response" {
-        return Err("Service observation unavailable; no publication or retry was sent".into());
+        return Err(format!(
+            "{service} response unavailable; publication is not confirmed"
+        ));
     }
     let status = result["status"].as_u64().unwrap_or(0);
-    let data: Value =
-        serde_json::from_str(string(&result["body"])).map_err(|_| "Unreadable service JSON")?;
+    let data: Value = serde_json::from_str(string(&result["body"])).map_err(|_| {
+        format!(
+            "{service} returned a non-JSON response (HTTP {status}); publication is not confirmed"
+        )
+    })?;
     if !(200..300).contains(&status) || data["success"] == false {
         let reason = ["message", "error"]
             .iter()
@@ -177,7 +206,7 @@ fn response(result: &Value) -> Result<Value> {
             .unwrap_or("No service reason supplied");
         let hint = string(&data["hint"]);
         return Err(format!(
-            "Service rejected request (HTTP {status}); {}{}",
+            "{service} rejected request (HTTP {status}); {}{}",
             clip(reason, 240),
             if hint.trim().is_empty() {
                 String::new()
@@ -481,6 +510,56 @@ fn matches_reply(rows: &[Value], w: &Work) -> bool {
 fn receive(w: &mut Work, result: &Value) -> Result<(Option<Value>, String)> {
     if result["id"] != w.stage {
         return Err("Continuation does not match the pending request".into());
+    }
+    if w.stage == "read_wait" {
+        let request = w
+            .read_retry
+            .as_ref()
+            .ok_or("Missing pending read")?
+            .0
+            .clone();
+        w.stage = text(&request, "id");
+        return Ok((
+            Some(request),
+            "Retrying the temporary service read failure".into(),
+        ));
+    }
+    // Only read requests may be repeated. POST, AI and malformed successful
+    // replies never enter this path; no service action is blindly resubmitted.
+    if matches!(result["status"].as_u64(), Some(502 | 503 | 504))
+        && w.read_retry
+            .as_ref()
+            .is_some_and(|(r, n)| r["id"] == w.stage && *n < 2)
+    {
+        let retry_after = result["headers"].as_object().and_then(|headers| {
+            headers
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case("retry-after"))
+                .map(|(_, value)| value)
+        });
+        let seconds = match retry_after {
+            None => Some(5),
+            Some(value) => string(value)
+                .parse::<u64>()
+                .ok()
+                .filter(|n| *n <= 60)
+                .map(|n| n.max(5)),
+        };
+        if let Some(seconds) = seconds {
+            let (_, attempt) = w.read_retry.as_mut().unwrap();
+            *attempt += 1;
+            let message = format!(
+                "Temporary service read failure (HTTP {}); retry {attempt}/2",
+                result["status"]
+            );
+            w.stage = "read_wait".into();
+            return Ok((
+                Some(
+                    json!({"kind":"runtime.wait","id":"read_wait","continuation":"receive","milliseconds":seconds*1000}),
+                ),
+                message,
+            ));
+        }
     }
     let next = match w.stage.as_str() {
         "me" => {
@@ -933,7 +1012,22 @@ pub fn evaluate_json(bytes: &[u8]) -> Vec<u8> {
         if action == "receive" {
             return Ok(match receive(&mut w, &input["result"]) {
                 Ok((req, msg)) => output(w, &msg, req),
-                Err(error) => output(w, &format!("Stopped: {error}"), None),
+                Err(error) => {
+                    let message = format!(
+                        "{} did not complete: {error}\n{}",
+                        if w.mode == "cycle" {
+                            "Cycle"
+                        } else {
+                            "Request"
+                        },
+                        if w.running {
+                            "Automatic schedule remains enabled; the next cycle will read fresh service history."
+                        } else {
+                            "Automatic publishing is off."
+                        }
+                    );
+                    output(w, &message, None)
+                }
             });
         }
         match action {
@@ -1152,6 +1246,10 @@ mod tests {
         docs_only: bool,
         thin_profile: bool,
         saw_public_receipt: bool,
+        fail_stage: &'static str,
+        fail_status: u16,
+        failures: usize,
+        waits: usize,
     }
     impl Service {
         fn run(&mut self, action: &str, running: bool, settings: Value) -> Value {
@@ -1181,7 +1279,11 @@ mod tests {
                 action = "receive".into();
                 let stage = string(&request["id"]);
                 result = match string(&request["kind"]) {
-                    "runtime.wait" => json!({"id":stage}),
+                    "runtime.wait" => {
+                        self.waits += 1;
+                        assert!(request["milliseconds"].as_u64().unwrap() <= 60_000);
+                        json!({"id":stage})
+                    }
                     "ai.infer" => {
                         self.ai += 1;
                         if stage == "solve" {
@@ -1217,6 +1319,12 @@ mod tests {
                     "http.request" => {
                         let url = string(&request["url"]);
                         assert!(url.starts_with(API) || url.starts_with("https://api.github.com/"));
+                        if stage == self.fail_stage && self.failures > 0 {
+                            self.failures -= 1;
+                            result = json!({"id":stage,"outcome":"response","status":self.fail_status,
+                                "headers":{"content-type":"text/html"},"body":"<html>private-proxy-body</html>"});
+                            continue;
+                        }
                         if stage.starts_with("receipt_") {
                             assert!(request["credential"].is_null());
                             self.saw_public_receipt = true;
@@ -1351,6 +1459,63 @@ mod tests {
         }
     }
     #[test]
+    fn temporary_html_gateway_failure_recovers_without_duplicate_publication() {
+        let mut service = Service {
+            fail_stage: "source",
+            fail_status: 504,
+            failures: 2,
+            ..Service::default()
+        };
+        let out = service.run("cycle", true, json!({}));
+        assert!(
+            string(&out["view"]["message"]).contains("confirmed published"),
+            "{out}"
+        );
+        assert_eq!(service.waits, 2);
+        assert_eq!(service.writes, 1);
+        assert!(service.saw_public_receipt);
+    }
+
+    #[test]
+    fn exhausted_read_or_failed_write_never_becomes_a_success_or_write_retry() {
+        for (stage, status, remaining, waits) in [
+            ("source", 504, 1, 2),
+            ("home", 503, 1, 2),
+            ("source", 429, 3, 0),
+            ("source", 200, 3, 0),
+            ("create", 504, 3, 0),
+        ] {
+            let mut service = Service {
+                fail_stage: stage,
+                fail_status: status,
+                failures: 4,
+                ..Service::default()
+            };
+            let out = service.run("cycle", true, json!({}));
+            let message = string(&out["view"]["message"]);
+            assert!(message.contains(&format!("HTTP {status}")), "{message}");
+            assert!(
+                message.contains(if stage == "source" {
+                    "GitHub"
+                } else {
+                    "Moltbook"
+                }),
+                "{message}"
+            );
+            assert!(
+                message.contains("Automatic schedule remains enabled"),
+                "{message}"
+            );
+            assert!(!out.to_string().contains("private-proxy-body"));
+            assert!(out["requests"].as_array().unwrap().is_empty());
+            assert!(out["state"].is_null());
+            assert_eq!(service.failures, remaining);
+            assert_eq!(service.waits, waits);
+            assert_eq!(service.writes, 0);
+        }
+    }
+
+    #[test]
     fn reconnect_and_preview_rebuild_history_without_local_state_or_effects() {
         let mut service = Service::default();
         let view = service.run("open", false, json!({}));
@@ -1360,6 +1525,54 @@ mod tests {
         assert_eq!(service.histories, 2);
         assert_eq!(service.publication_reads, 2);
         assert_eq!(service.ai, 1);
+    }
+    #[test]
+    fn read_retries_respect_service_delay_without_extending_the_host_wait_bound() {
+        for (retry_after, wait) in [("20", Some(20_000)), ("120", None), ("invalid", None)] {
+            let mut work = Work::default();
+            http(
+                &mut work,
+                "source",
+                "GET",
+                "https://api.github.com/repos/owner/repo/commits".into(),
+                None,
+            );
+            let result = receive(
+                &mut work,
+                &json!({"id":"source","outcome":"response","status":503,"headers":{"Retry-After":retry_after},"body":"<html>down</html>"}),
+            );
+            match wait {
+                Some(ms) => assert_eq!(result.unwrap().0.unwrap()["milliseconds"], ms),
+                None => assert!(result.unwrap_err().contains("HTTP 503")),
+            }
+        }
+    }
+    #[test]
+    fn running_workflow_exposes_run_and_stop_through_the_existing_host_actions() {
+        for running in [false, true] {
+            let work = Work {
+                running,
+                ..Work::default()
+            };
+            let shown = view(&work, "Fresh history");
+            let actions = shown["actions"].as_array().unwrap();
+            assert_eq!(actions[0]["host"], "workspace.start");
+            assert_eq!(
+                actions
+                    .iter()
+                    .filter(|a| a["host"] == "workspace.stop")
+                    .count(),
+                usize::from(running)
+            );
+            assert_eq!(
+                actions[0]["label"],
+                if running {
+                    "Run cycle now"
+                } else {
+                    "Start automatic cycle"
+                }
+            );
+        }
     }
     #[test]
     fn large_commit_pages_reach_product_changes_without_expanding_host_limits() {

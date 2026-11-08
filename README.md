@@ -106,7 +106,10 @@ Local ZIP installation remains a development path.
 - `hivra.contract.moltbook-ambassador.v1` (bounded observation and deterministic
   assisted post/reply preparation; the package owns its service protocol and
   workflow, and the host executes requests within the owner's grants)
-  Source candidate 0.8.5 reads commit files in six-file GitHub pages, passing
+  Its cycle controls distinguish enabling the schedule from running one now
+  and stopping/revoking access. Temporary gateway failures retry only bounded
+  reads; service/HTTP failures remain visible without replaying publication.
+  Source candidate 0.8.6 reads commit files in six-file GitHub pages, passing
   documentation before selecting bounded product evidence. It marks incomplete
   excerpts/file lists and stops visibly at its page budget. This repairs news
   preparation from large commits without increasing host limits or rebuilding
