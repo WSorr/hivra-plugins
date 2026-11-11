@@ -94,9 +94,11 @@ reads directly. Until those files exist, keep the previous catalog live.
 
 ## Included plugins
 
-The `v0.2.12-plugins` Discovery set updates Moltbook Ambassador to 0.8.4.
-Capsule Chat remains 0.2.3 and Jack Ventura remains 0.2.1. Update Capsule to
-`v1.0.5-test3`, then open Plugins → Discover plugins → Install.
+The `v0.2.13-plugins` Discovery set contains Jack Ventura 0.2.6,
+Moltbook Ambassador 0.8.6 and Capsule Chat 0.2.3. It binds the exact canonical
+packages already accepted on Mac and Samsung; no Capsule rebuild is needed.
+Use Capsule `v1.0.5-test4`, open
+Plugins → Discover plugins → Refresh catalog → Install.
 Jack requires its common host capabilities; `v1.0.5-test2` does not provide the
 projected HTTP response and execution budget required for its full instrument
 catalog. The signed catalog pins the verified canonical release packages.
@@ -109,11 +111,11 @@ Local ZIP installation remains a development path.
   Its cycle controls distinguish enabling the schedule from running one now
   and stopping/revoking access. Temporary gateway failures retry only bounded
   reads; service/HTTP failures remain visible without replaying publication.
-  Source candidate 0.8.6 reads commit files in six-file GitHub pages, passing
+  Version 0.8.6 reads commit files in six-file GitHub pages, passing
   documentation before selecting bounded product evidence. It marks incomplete
   excerpts/file lists and stops visibly at its page budget. This repairs news
   preparation from large commits without increasing host limits or rebuilding
-  Capsule. The published Discovery package remains 0.8.4 until a separate release.
+  Capsule. The signed catalog above binds its canonical 0.8.6 package.
 - `hivra.contract.jack-ventura.v1`: JackV `3b81753` line formation and a
   package-owned workspace through common API v2. The package owns service
   requests, account binding, entry/exit planning, response parsing and recovery;
@@ -181,8 +183,8 @@ Local ZIP installation remains a development path.
   and plans. Its permission description covers the workflow without duplicating
   the mutable instrument or limits; selected settings and workspace fields own
   those values, including when Start reuses the preceding workflow declaration.
-  The published Discovery version above remains unchanged until
-  a separately authorized release and packaged/live acceptance.
+  The signed catalog above binds the accepted 0.2.6 package; full trading
+  qualification remains separate from this read-only package delivery.
   Entry stops remain attached to the entry request; fill-based amendment is
   outside the owner-selected scope. Actual full TP/SL closure and continuous
   VPS operation still require qualification. No live
