@@ -10,33 +10,33 @@
       "display_name": "Capsule Chat",
       "version": "0.2.3",
       "package_kind": "zip",
-      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.12-plugins/capsule_chat_test_plugin-0.2.3.zip",
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.13-plugins/capsule_chat_test_plugin-0.2.3.zip",
       "sha256_hex": "72b06bf290536c85b2a57fc17bfe64099e7907c9620cc68a755796abc530225f"
     },
     {
       "id": "moltbook-ambassador",
       "plugin_id": "hivra.contract.moltbook-ambassador.v1",
       "display_name": "Moltbook Ambassador",
-      "version": "0.8.4",
+      "version": "0.8.6",
       "package_kind": "zip",
-      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.12-plugins/moltbook_ambassador_draft_plugin-0.8.4.zip",
-      "sha256_hex": "96c2b702c19f905809862499a37285d1420a04202692cf4896fe8c963b410d86"
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.13-plugins/moltbook_ambassador_draft_plugin-0.8.6.zip",
+      "sha256_hex": "522853ec85cd074f764e45d8a457cfc8a81c638bccc61a9f40ef9fcb71dfdc01"
     },
     {
       "id": "jack-ventura",
       "plugin_id": "hivra.contract.jack-ventura.v1",
       "display_name": "Jack Ventura — торговый бот BingX",
-      "version": "0.2.1",
+      "version": "0.2.6",
       "package_kind": "zip",
-      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.12-plugins/jack_ventura_plugin-0.2.1.zip",
-      "sha256_hex": "b4a06da9cb7c59874b149680cc5b129f58a197f1b249920d347a981f11f41256"
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.13-plugins/jack_ventura_plugin-0.2.6.zip",
+      "sha256_hex": "f13559288ec5bc2c0b2fdbd544760ce9fd4a15b0bc80a9e6f65f0b6339293d11"
     }
   ],
   "signatures": [
     {
       "algorithm": "ed25519",
       "key_id": "f4757da54ecb6f16431bcfb4fcc947633d6f68c9b4576b69ddb61fc4fe2de7a3",
-      "signature_hex": "b1fa644102254dcfaae513f6c62d41ba6d2b090c83f8d70579f2150156a52d9208230ab0e5eacdef2184207c161187006a2b23609ed433c709705db4289e0e01"
+      "signature_hex": "2482724e52276c0464a25bdf992615ddf260e15b202d83ef102e95ec3ef92f9ca1ac8d059c75d27cb3f5417f4593b7e7538f4ab32c98c93a31e7448021e84d01"
     }
   ]
 }
