@@ -1,7 +1,7 @@
 {
   "schema": "hivra.plugin.manifest",
   "version": 1,
-  "release_version": "0.2.4",
+  "release_version": "0.2.6",
   "plugin_id": "hivra.contract.jack-ventura.v1",
   "display_name": "Jack Ventura",
   "wasm_module": "hivra_jack_ventura_plugin.wasm",
