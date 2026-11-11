@@ -25,7 +25,7 @@
     {
       "id": "jack-ventura",
       "plugin_id": "hivra.contract.jack-ventura.v1",
-      "display_name": "Jack Ventura",
+      "display_name": "Jack Ventura — торговый бот BingX",
       "version": "0.2.1",
       "package_kind": "zip",
       "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.12-plugins/jack_ventura_plugin-0.2.1.zip",
@@ -36,7 +36,7 @@
     {
       "algorithm": "ed25519",
       "key_id": "f4757da54ecb6f16431bcfb4fcc947633d6f68c9b4576b69ddb61fc4fe2de7a3",
-      "signature_hex": "f912e7b2cfb72dbad9e68314acb08bc696462db9acfa404476d17af3fc0d9b9d4b9e74952fe9cf0c11b2f0cca678356faf8ef6ad760dd34c16e567e912288c01"
+      "signature_hex": "b1fa644102254dcfaae513f6c62d41ba6d2b090c83f8d70579f2150156a52d9208230ab0e5eacdef2184207c161187006a2b23609ed433c709705db4289e0e01"
     }
   ]
 }
