@@ -703,7 +703,7 @@ fn presentation(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Value> {
     view["confirmation"] = Value::Null;
     if c.engine.account.is_some() {
         view["schedule"] = json!({"version":2,"action":"cycle","interval_seconds":60,"access":access(true),
-            "description":"Run Jack Ventura with the settings selected at Start. Permit reading the account, placing and cancelling managed orders and reducing exits. The package enforces the selected settings; network permission is not a host financial-loss guarantee. Existing exchange orders remain after revocation."});
+            "description":"Run Jack Ventura with the settings selected at Start. Permit reading the account, placing and cancelling managed orders and reducing exits. The package enforces the selected settings; network permission is not a host financial-loss guarantee. Each Start replaces the previous run. Earlier exchange orders and positions remain at the exchange for the owner to manage. Revocation does not cancel them."});
     }
     if w.orders_view {
         return Ok(view);
@@ -812,6 +812,9 @@ fn presentation(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Value> {
                 None => "\nProfit exit: no confirmed target yet.".into(),
             },
         );
+    }
+    if c.engine.account.is_some() && c.engine.entry.is_none() {
+        message.push_str("\nEach Start begins a new run. Earlier orders and positions stay at the exchange for you to manage.");
     }
     if !c.new_entries {
         message
@@ -2112,21 +2115,14 @@ pub(super) fn evaluate_json(raw: &[u8]) -> Vec<u8> {
             w.dirty = true;
             Ok(())
         } else if action == "start" {
-            c.new_entries = true;
-            w.dirty = true;
             let configured = input
                 .settings
                 .clone()
                 .unwrap_or_else(|| serde_json::to_value(&c.engine.settings).unwrap());
-            // An explicit Start replaces the previous executor's selection.
-            // Its active flag is not a veto on the owner's newly chosen symbol.
-            let running = w.running;
-            w.running = false;
+            // Retain dispatch identities in this checkpoint, not ownership of
+            // the previous run's orders. No old order is cancelled or resumed.
             engine(&mut c, &mut w, "start", None, Some(configured), now)?;
-            w.running = running;
-            w.queue.clear();
-            w.resume = None;
-            w.autonomous = false;
+            c.new_entries = true;
             Ok(())
         } else {
             let settings = input.settings;
@@ -2896,39 +2892,154 @@ mod tests {
     }
 
     #[test]
-    fn explicit_start_uses_selected_symbol_and_preserves_previous_managed_identity_without_dispatch(
-    ) {
-        let c = managed("open", 0.0);
-        let previous = invoke(
-            "present",
-            serde_json::to_value(&c).unwrap(),
-            Value::Null,
-            Value::Null,
-            100_000_000,
-        );
-        let old = serde_json::to_value(&c.engine.entry).unwrap();
-        let mut settings = serde_json::to_value(&c.engine.settings).unwrap();
-        settings["symbol"] = json!("MNT-USDT");
-        settings["entry_margin"] = json!(2.0);
-        settings["stop_percent"] = json!(15.0);
-        settings["timeframes"] = json!("1m");
+    fn explicit_start_replaces_open_partial_filled_and_unknown_assignments_without_effects() {
+        for (status, filled) in [
+            ("unknown", 0.0),
+            ("open", 0.0),
+            ("partial", 0.5),
+            ("filled", 1.0),
+        ] {
+            for symbol in ["BTC-USDT", "MNT-USDT"] {
+                for changed in [false, true] {
+                    let mut c = managed(status, filled);
+                    if filled > 0.0 {
+                        c = observe(
+                            c,
+                            if filled == 1.0 {
+                                "FILLED"
+                            } else {
+                                "PARTIALLY_FILLED"
+                            },
+                            filled,
+                            true,
+                            false,
+                            100_000_000,
+                        );
+                        let plan = e(&c)["entry"]["plan"].clone();
+                        let quantity = c
+                            .engine
+                            .entry
+                            .as_ref()
+                            .unwrap()
+                            .position
+                            .as_ref()
+                            .unwrap()
+                            .quantity;
+                        c.engine.entry.as_mut().unwrap().profit_exit = Some(serde_json::from_value(json!({
+                            "plan":{"entry_plan":plan,"position_id":"456","quantity":quantity,"average_price":96.5,
+                                "price":105.0,"prepared_at_ms":100_000_000,"expires_at_ms":100_060_000},
+                            "attempted":true,"evidence":null
+                        })).unwrap());
+                    }
+                    let plan = e(&c)["entry"]["plan"].clone();
+                    let identity = entry_id(&plan);
+                    c.intents.insert(identity, "order.entry.place".into());
+                    c.intents
+                        .insert("d".repeat(64), "position.exit.place".into());
+                    c.new_entries = false;
+                    let saved = serde_json::to_value(&c).unwrap();
+                    let previous = invoke(
+                        "present",
+                        saved.clone(),
+                        Value::Null,
+                        Value::Null,
+                        100_000_000,
+                    );
+                    let mut settings = serde_json::to_value(&c.engine.settings).unwrap();
+                    settings["symbol"] = json!(symbol);
+                    if changed {
+                        settings["entry_margin"] = json!(2.0);
+                        settings["stop_percent"] = json!(15.0);
+                        settings["timeframes"] = json!("1m");
+                        settings["detection_length"] = json!(7);
+                    }
+                    let raw = json!({"api_version":2,"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
+                        "action":"start","state":saved,"settings":settings,"observed_at_ms":100_000_001,"execution":{"running":true}});
+                    let out: Value =
+                        serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap()))
+                            .unwrap();
+                    assert_eq!(
+                        out["status"], "executed",
+                        "{status}, {symbol}, {changed}: {out}"
+                    );
+                    let next = &out["result"]["state"];
+                    assert_eq!(next["engine"]["settings"], settings);
+                    assert!(
+                        next["engine"]["entry"].is_null(),
+                        "Ended assignment remained active: {out}"
+                    );
+                    assert!(next["engine"]["parked"].is_null());
+                    assert_eq!(next["intents"], raw["state"]["intents"]);
+                    assert_eq!(next["engine"]["account"], raw["state"]["engine"]["account"]);
+                    assert_eq!(next["new_entries"], true);
+                    assert_eq!(
+                        out["result"]["view"]["schedule"],
+                        previous["result"]["view"]["schedule"]
+                    );
+                    for field in out["result"]["view"]["fields"].as_array().unwrap() {
+                        let id = field["id"].as_str().unwrap();
+                        let expected = if id == "timeframes" && settings[id].is_null() {
+                            json!("all")
+                        } else {
+                            settings[id].clone()
+                        };
+                        assert_eq!(field["value"], expected);
+                    }
+                    assert!(out["result"]["requests"].as_array().unwrap().is_empty());
+                    let mut started: Checkpoint = serde_json::from_value(next.clone()).unwrap();
+                    let mut wake = Work {
+                        running: true,
+                        ..Work::default()
+                    };
+                    engine(&mut started, &mut wake, "cycle", None, None, 100_000_002).unwrap();
+                    assert!(!wake.queue.is_empty());
+                    assert!(wake.queue.iter().all(|job| {
+                        matches!(
+                            job["kind"].as_str(),
+                            Some("market.candles.read" | "account.snapshot.read")
+                        ) && job["symbol"] == settings["symbol"]
+                    }));
+                    let mut replay = Work {
+                        job: Some(
+                            json!({"kind":"entry.dispatch","plan":plan,"hedge":true,"checked_at":100_000_002}),
+                        ),
+                        ..Work::default()
+                    };
+                    assert!(request_for(&mut started, &mut replay, 100_000_002).is_err());
+                    assert_eq!(
+                        serde_json::to_value(&started.intents).unwrap(),
+                        next["intents"]
+                    );
+                    let reopened =
+                        invoke("open", next.clone(), Value::Null, Value::Null, 100_000_002);
+                    assert_eq!(reopened["status"], "executed", "{reopened}");
+                    assert!(reopened["result"]["state"]["engine"]["entry"].is_null());
+                    assert_eq!(reopened["result"]["state"]["intents"], next["intents"]);
+                    assert!(reopened["result"]["requests"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .all(|r| r["method"] == "GET"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_start_does_not_reactivate_a_previous_instrument_assignment() {
+        let mut c = managed("open", 0.0);
+        let original = serde_json::to_value(&c.engine.settings).unwrap();
+        let mut selected = c.engine.settings.clone();
+        selected.symbol = "MNT-USDT".into();
+        c.engine.select_instrument(selected).unwrap();
+        assert_eq!(c.engine.parked.len(), 1);
         let raw = json!({"api_version":2,"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
-            "action":"start","state":c,"settings":settings,"observed_at_ms":100_000_001,"execution":{"running":true}});
+            "action":"start","state":c,"settings":original,"observed_at_ms":100_000_001,"execution":{"running":true}});
         let out: Value =
             serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap();
         assert_eq!(out["status"], "executed", "{out}");
-        assert_eq!(out["result"]["state"]["engine"]["settings"], settings);
-        // A remote Start may reuse the previous workflow declaration. Mutable
-        // choices belong in settings/fields, not a second copy in its prose.
-        assert_eq!(
-            out["result"]["view"]["schedule"],
-            previous["result"]["view"]["schedule"]
-        );
-        for field in out["result"]["view"]["fields"].as_array().unwrap() {
-            assert_eq!(field["value"], settings[field["id"].as_str().unwrap()]);
-        }
         assert!(out["result"]["state"]["engine"]["entry"].is_null());
-        assert_eq!(out["result"]["state"]["engine"]["parked"][0]["entry"], old);
+        assert!(out["result"]["state"]["engine"]["parked"].is_null());
         assert!(out["result"]["requests"].as_array().unwrap().is_empty());
     }
 
