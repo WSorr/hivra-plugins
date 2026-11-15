@@ -1208,7 +1208,16 @@ fn evaluate_state(input: Input<'_>, mut state: State) -> Result<Output<'_>, Stri
     match input.action.as_str() {
         "open" => state.request_recovery(&mut requests),
         "present" => {}
-        "inspect" | "connect" | "prepare_entry" | "start" => {
+        "start" => {
+            let settings = input.settings.ok_or("Missing settings")?;
+            settings.validate()?;
+            // An explicit Start is a new assignment, not recovery of an old
+            // order. Service orders survive; only current-run decisions reset.
+            let account = state.account.take();
+            state = State::new(settings);
+            state.account = account;
+        }
+        "inspect" | "connect" | "prepare_entry" => {
             let mut settings = input.settings.ok_or("Missing settings")?;
             settings.validate()?;
             let switching = settings.symbol != state.settings.symbol;

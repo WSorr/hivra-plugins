@@ -178,9 +178,14 @@ Local ZIP installation remains a development path.
   the checkpoint and common host contract are unchanged.
   Restart before the durable HTTP dispatch marker is proven not sent; once that
   marker exists, missing service evidence remains uncertain and cannot trigger
-  a second send. Explicit Start uses the newly selected instrument even when
-  replacing a running executor; retained orders keep their original identities
-  and plans. Its permission description covers the workflow without duplicating
+  a second send. Candidate 0.2.7 makes explicit Start a new assignment with the
+  selected settings, even for the same instrument. It releases earlier active
+  and parked plans from automatic management without cancelling, closing or
+  waiting for exchange orders/positions. Existing dispatch identities remain
+  in the same checkpoint to prevent replay; ordinary restart still recovers
+  the current assignment. The workspace and grant explain that earlier orders
+  remain at the exchange for the owner to manage. No host change, schema or
+  effect-history archive is added. Its permission description covers the workflow without duplicating
   the mutable instrument or limits; selected settings and workspace fields own
   those values, including when Start reuses the preceding workflow declaration.
   The signed catalog above binds the accepted 0.2.6 package; full trading
