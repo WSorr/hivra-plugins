@@ -94,7 +94,7 @@ reads directly. Until those files exist, keep the previous catalog live.
 
 ## Included plugins
 
-The `v0.2.13-plugins` Discovery set contains Jack Ventura 0.2.6,
+The `v0.2.14-plugins` Discovery set contains Jack Ventura 0.2.7,
 Moltbook Ambassador 0.8.6 and Capsule Chat 0.2.3. It binds the exact canonical
 packages already accepted on Mac and Samsung; no Capsule rebuild is needed.
 Use Capsule `v1.0.5-test4`, open
@@ -160,7 +160,7 @@ Local ZIP installation remains a development path.
   cooldown from five to ten seconds and slows remaining pages through the existing
   wait capability; rejected pages are not consumed or treated as complete. No
   retry is added for trading mutations.
-  The current 0.2.6 source reads a last-trade result through the same HTTP workflow:
+  The current 0.2.7 source reads a last-trade result through the same HTTP workflow:
   exact entry and closing fills, average prices, signed fees/rebates and realized
   PnL after trading fees (funding excluded). Full TP requires the known reducing
   exit's actual fills to cover the entry and fresh absence of its position and
@@ -178,7 +178,7 @@ Local ZIP installation remains a development path.
   the checkpoint and common host contract are unchanged.
   Restart before the durable HTTP dispatch marker is proven not sent; once that
   marker exists, missing service evidence remains uncertain and cannot trigger
-  a second send. Candidate 0.2.7 makes explicit Start a new assignment with the
+  a second send. Version 0.2.7 makes explicit Start a new assignment with the
   selected settings, even for the same instrument. It releases earlier active
   and parked plans from automatic management without cancelling, closing or
   waiting for exchange orders/positions. Existing dispatch identities remain
@@ -188,11 +188,12 @@ Local ZIP installation remains a development path.
   effect-history archive is added. Its permission description covers the workflow without duplicating
   the mutable instrument or limits; selected settings and workspace fields own
   those values, including when Start reuses the preceding workflow declaration.
-  The signed catalog above binds the accepted 0.2.6 package; full trading
-  qualification remains separate from this read-only package delivery.
-  Entry stops remain attached to the entry request; fill-based amendment is
-  outside the owner-selected scope. Actual full TP/SL closure and continuous
-  VPS operation still require qualification. No live
-  trade is authorized by local checks. Build with
+  The signed catalog above binds the accepted 0.2.7 package. Its exact bytes
+  passed native update, reopening and navigation on macOS and Samsung without
+  rebuilding Capsule. One live managed entry, full TP fill and flat position
+  have also been confirmed. Reentry, restart during an open position and
+  long-duration operation remain unqualified. Entry stops stay attached to
+  the entry request; fill-based amendment is outside the owner-selected scope.
+  Build with
   `./scripts/build_plugin_zip.sh jack_ventura_plugin`; package changes within
   the existing API do not require a Capsule rebuild.
