@@ -94,9 +94,10 @@ reads directly. Until those files exist, keep the previous catalog live.
 
 ## Included plugins
 
-The `v0.2.14-plugins` Discovery set contains Jack Ventura 0.2.7,
-Moltbook Ambassador 0.8.6 and Capsule Chat 0.2.3. It binds the exact canonical
-packages already accepted on Mac and Samsung; no Capsule rebuild is needed.
+The `v0.2.15-plugins` Discovery set contains Jack Ventura 0.2.8,
+Moltbook Ambassador 0.8.6 and Capsule Chat 0.2.3. Jack keeps its settings and
+controls visible on open while service evidence is being read. Discovery can
+install the update without a Capsule rebuild.
 Use Capsule `v1.0.5-test4`, open
 Plugins → Discover plugins → Refresh catalog → Install.
 Jack requires its common host capabilities; `v1.0.5-test2` does not provide the
