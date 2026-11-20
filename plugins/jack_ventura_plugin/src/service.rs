@@ -2188,9 +2188,10 @@ pub(super) fn evaluate_json(raw: &[u8]) -> Vec<u8> {
         } else {
             None
         };
-        let mut view = if request.is_some() {
-            // Intermediate continuations are never shown by the host. Do not
-            // rebuild a complete chart between every bounded HTTP/chunk step.
+        let mut view = if request.is_some() && action != "open" {
+            // Status may consume the initial open view without dispatching
+            // requests. Keep it complete, but avoid rebuilding a full chart
+            // between subsequent bounded HTTP/chunk continuation steps.
             json!({"title":"Jack Ventura","message":"Reading service evidence","details":"","fields":[],"actions":[],"rows":[],"columns":[]})
         } else {
             presentation(&mut c, &mut w, now)?
@@ -2889,6 +2890,59 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("not migrated"));
+    }
+
+    #[test]
+    fn initial_open_exposes_controls_before_recovery_requests() {
+        let mut cases = Vec::new();
+        for reason in ["TP", "SL"] {
+            for side in ["long", "short"] {
+                let (c, _) = trade_result_fixture(reason, side, |_, _| {}).unwrap();
+                cases.push((format!("{reason}/{side}"), c));
+            }
+        }
+        let mut switched = managed("open", 0.0);
+        let mut settings = switched.engine.settings.clone();
+        settings.symbol = "MNT-USDT".into();
+        switched.engine.select_instrument(settings).unwrap();
+        cases.push(("account symbol recovery".into(), switched));
+        for (case, c) in cases {
+            let expected = [
+                ("symbol", json!(c.engine.settings.symbol)),
+                ("timeframes", json!(c.engine.settings.timeframes)),
+                ("entry_margin", json!(c.engine.settings.entry_margin)),
+                ("stop_percent", json!(c.engine.settings.stop_percent)),
+            ];
+            let saved = serde_json::to_value(c).unwrap();
+            let out = invoke(
+                "open",
+                saved.clone(),
+                Value::Null,
+                Value::Null,
+                1_793_916_970_002,
+            );
+            assert_eq!(out["status"], "executed", "{case}: {out}");
+            let result = &out["result"];
+            let requests = result["requests"].as_array().unwrap();
+            assert!(!requests.is_empty(), "{case}: expected recovery reads");
+            assert!(requests.iter().all(|r| r["method"] == "GET"));
+            assert_eq!(result["state"], saved);
+            let view = &result["view"];
+            for (field, value) in expected {
+                let shown = view["fields"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|f| f["id"] == field)
+                    .unwrap_or_else(|| panic!("{case}: missing setting {field}"));
+                assert_eq!(shown["value"], value);
+            }
+            assert!(view["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a["host"] == "workspace.start"));
+        }
     }
 
     #[test]
