@@ -10,7 +10,7 @@
       "display_name": "Capsule Chat",
       "version": "0.2.3",
       "package_kind": "zip",
-      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.14-plugins/capsule_chat_test_plugin-0.2.3.zip",
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.15-plugins/capsule_chat_test_plugin-0.2.3.zip",
       "sha256_hex": "72b06bf290536c85b2a57fc17bfe64099e7907c9620cc68a755796abc530225f"
     },
     {
@@ -19,24 +19,24 @@
       "display_name": "Moltbook Ambassador",
       "version": "0.8.6",
       "package_kind": "zip",
-      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.14-plugins/moltbook_ambassador_draft_plugin-0.8.6.zip",
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.15-plugins/moltbook_ambassador_draft_plugin-0.8.6.zip",
       "sha256_hex": "522853ec85cd074f764e45d8a457cfc8a81c638bccc61a9f40ef9fcb71dfdc01"
     },
     {
       "id": "jack-ventura",
       "plugin_id": "hivra.contract.jack-ventura.v1",
       "display_name": "Jack Ventura — BingX trading bot",
-      "version": "0.2.7",
+      "version": "0.2.8",
       "package_kind": "zip",
-      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.14-plugins/jack_ventura_plugin-0.2.7.zip",
-      "sha256_hex": "60e8d7a57938c67e4a139d89b9d52defde0420bad3a0b936fb0617937481090c"
+      "download_url": "https://github.com/WSorr/hivra-plugins/releases/download/v0.2.15-plugins/jack_ventura_plugin-0.2.8.zip",
+      "sha256_hex": "5ec2d4058ace21f0fe6a72742e1b982290f3f428cca89d666ad134f9bda136e5"
     }
   ],
   "signatures": [
     {
       "algorithm": "ed25519",
       "key_id": "f4757da54ecb6f16431bcfb4fcc947633d6f68c9b4576b69ddb61fc4fe2de7a3",
-      "signature_hex": "d2a38ef5ce2cda1924afc992137c713d26f66d220c3976a34145fe5c2509fd667ee444390f0c090bf06c69fff9685b113a98dc01fa551b850d8160574943a50f"
+      "signature_hex": "f7dc3760ec53a43949716669e5b00ff59df47f27889bacb7a4946b57bae1a838e64bede72e7e08f85cdbd4f5802cbd0411e4ab630c357851077dc67011dd310b"
     }
   ]
 }
