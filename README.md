@@ -94,11 +94,11 @@ reads directly. Until those files exist, keep the previous catalog live.
 
 ## Included plugins
 
-The `v0.2.15-plugins` Discovery set contains Jack Ventura 0.2.8,
-Moltbook Ambassador 0.8.6 and Capsule Chat 0.2.3. Jack keeps its settings and
-controls visible on open while service evidence is being read. Discovery can
-install the update without a Capsule rebuild.
-Use Capsule `v1.0.5-test4`, open
+The `v0.2.16-plugins` Discovery set contains Jack Ventura 0.2.9,
+Moltbook Ambassador 0.8.6 and Capsule Chat 0.2.3. Jack keeps the running
+assignment visible while the owner edits the next setup. Capsule
+`v1.0.6-test3` applies the selected settings through the authorized Start
+and preserves the draft on Stop. In a compatible Capsule, open
 Plugins → Discover plugins → Refresh catalog → Install.
 Jack requires its common host capabilities; `v1.0.5-test2` does not provide the
 projected HTTP response and execution budget required for its full instrument
