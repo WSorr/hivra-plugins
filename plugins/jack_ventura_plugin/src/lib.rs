@@ -1222,7 +1222,7 @@ fn evaluate_state(input: Input<'_>, mut state: State) -> Result<Output<'_>, Stri
             settings.validate()?;
             let switching = settings.symbol != state.settings.symbol;
             if switching {
-                if input.action == "connect"
+                if (input.action == "connect" && state.account.is_some())
                     || input
                         .execution
                         .as_ref()

@@ -132,8 +132,9 @@ Local ZIP installation remains a development path.
   Availability/rules are checked again by entry preflight. This requires a host
   advertising `response_json_paths` with a 1 MiB source bound;
   older Capsules show an update requirement instead of fetching oversized input.
-  Start permits bounded autonomous cycles; Stop new entries keeps observation
-  and reducing management available. Full host revocation ends new dispatch,
+  Start permits bounded autonomous cycles and remains available during an
+  active assignment. Stop new entries leaves the next Start's settings in the
+  form and keeps observation and reducing management available. Full host revocation ends new dispatch,
   without cancelling existing exchange orders or closing positions.
   The public workspace has one trading journey: connect, configure, Start/Stop
   and observe. Preparation, placement and managed cancellation are private

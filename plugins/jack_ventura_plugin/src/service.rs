@@ -817,8 +817,9 @@ fn presentation(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Value> {
         message.push_str("\nEach Start begins a new run. Earlier orders and positions stay at the exchange for you to manage.");
     }
     if !c.new_entries {
-        message
-            .push_str("\nNew entries off. Existing orders and positions remain at the exchange.");
+        message = format!(
+            "New entries off\nExisting orders and positions remain at the exchange.\n{message}"
+        );
     }
     if let Some(result) = w.trade_result["summary"].as_str() {
         message.push_str("\n\nLast trade · ");
@@ -857,6 +858,7 @@ fn presentation(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Value> {
     // One public trading journey. Private prepare/place/cancel commands are
     // used by the same cycle executor, never a parallel manual-entry workflow.
     let connected = c.engine.account.is_some();
+    let accepting_entries = w.running && c.new_entries;
     let managed = c
         .engine
         .entry
@@ -864,19 +866,19 @@ fn presentation(c: &mut Checkpoint, w: &mut Work, now: i64) -> R<Value> {
         .filter(|e| e.attempted && !e.not_sent());
     let mut actions = Vec::new();
     if connected {
-        actions.push(if w.running && c.new_entries {
-            json!({"id":"stop","label":"Stop new entries"})
-        } else {
-            json!({"id":"start","label":"Start Jack","host":"workspace.start"})
-        });
+        actions.push(json!({"id":"start","label":"Start Jack","host":"workspace.start"}));
     }
-    actions.push(json!({"id":"connect","label":if connected {"Reconnect account"} else {"Connect account"},"host":"workspace.authorize"}));
+    if connected && accepting_entries {
+        actions.push(json!({"id":"stop","label":"Stop new entries","settings":false}));
+    } else {
+        actions.push(json!({"id":"connect","label":if connected {"Refresh account"} else {"Connect account"},"host":"workspace.authorize","settings":!connected}));
+    }
     actions.push(match managed {
-        Some(entry) => json!({"id":"refresh_order","label":if entry.position.is_some() {"Refresh position"} else {"Refresh order"}}),
-        None => json!({"id":"inspect","label":"Refresh market"}),
+        Some(entry) => json!({"id":"refresh_order","label":if entry.position.is_some() {"Refresh position"} else {"Refresh order"},"settings":false}),
+        None => json!({"id":"inspect","label":"Refresh market","settings":!w.running}),
     });
     if connected {
-        actions.push(json!({"id":"list_orders","label":"Open orders"}));
+        actions.push(json!({"id":"list_orders","label":"Open orders","settings":false}));
     }
     view["actions"] = json!(actions);
     if let Some(field) = view["fields"]
@@ -2125,7 +2127,14 @@ pub(super) fn evaluate_json(raw: &[u8]) -> Vec<u8> {
             c.new_entries = true;
             Ok(())
         } else {
-            let settings = input.settings;
+            let settings = match action {
+                "refresh_order" | "list_orders" => None,
+                "inspect" if w.running => Some(serde_json::to_value(&c.engine.settings).unwrap()),
+                "connect" if c.engine.account.is_some() => {
+                    Some(serde_json::to_value(&c.engine.settings).unwrap())
+                }
+                _ => input.settings,
+            };
             if action == "connect" {
                 w.autonomous = false;
             }
@@ -3082,7 +3091,8 @@ mod tests {
     #[test]
     fn explicit_start_does_not_reactivate_a_previous_instrument_assignment() {
         let mut c = managed("open", 0.0);
-        let original = serde_json::to_value(&c.engine.settings).unwrap();
+        let mut original = serde_json::to_value(&c.engine.settings).unwrap();
+        original["timeframes"] = json!("1m");
         let mut selected = c.engine.settings.clone();
         selected.symbol = "MNT-USDT".into();
         c.engine.select_instrument(selected).unwrap();
@@ -3092,8 +3102,12 @@ mod tests {
         let out: Value =
             serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap();
         assert_eq!(out["status"], "executed", "{out}");
-        assert!(out["result"]["state"]["engine"]["entry"].is_null());
-        assert!(out["result"]["state"]["engine"]["parked"].is_null());
+        let next = &out["result"]["state"];
+        assert_eq!(next["engine"]["settings"]["symbol"], original["symbol"]);
+        assert_eq!(next["engine"]["settings"]["timeframes"], "1m");
+        assert_eq!(next["new_entries"], true);
+        assert!(next["engine"]["entry"].is_null());
+        assert!(next["engine"]["parked"].is_null());
         assert!(out["result"]["requests"].as_array().unwrap().is_empty());
     }
 
@@ -3117,7 +3131,9 @@ mod tests {
             .iter()
             .map(|a| a["id"].as_str().unwrap())
             .collect();
-        assert_eq!(ids, ["stop", "connect", "refresh_order", "list_orders"]);
+        assert_eq!(ids, ["start", "stop", "refresh_order", "list_orders"]);
+        assert_eq!(view["actions"][0]["host"], "workspace.start");
+        assert_eq!(view["actions"][1]["settings"], false);
         assert_eq!(serde_json::to_value(&c).unwrap(), saved);
         for action in ["prepare_entry", "place_entry", "place_exit", "cancel_entry"] {
             let output = invoke(action, saved.clone(), Value::Null, Value::Null, now);
@@ -3141,6 +3157,33 @@ mod tests {
             reopened["result"]["view"]["actions"][0]["host"],
             "workspace.start"
         );
+    }
+
+    #[test]
+    fn current_assignment_reads_ignore_the_next_start_settings() {
+        let now = 100_000_001;
+        for action in ["inspect", "refresh_order", "list_orders", "connect"] {
+            let mut c = managed("open", 0.0);
+            if action == "inspect" {
+                c.engine.entry = None;
+            }
+            let committed = serde_json::to_value(&c.engine.settings).unwrap();
+            let mut edited = committed.clone();
+            edited["timeframes"] = json!("5m");
+            edited["entry_margin"] = json!(2.5);
+            let raw = json!({
+                "api_version":2,"schema_version":1,"plugin_id":PLUGIN_ID,"host_method":"workspace",
+                "action":action,"state":c,"settings":edited,"observed_at_ms":now,"execution":{"running":true}
+            });
+            let result: Value =
+                serde_json::from_slice(&evaluate_json(&serde_json::to_vec(&raw).unwrap())).unwrap();
+            assert_eq!(result["status"], "executed", "{result}");
+            assert_eq!(result["result"]["state"]["engine"]["settings"], committed);
+            let requests = result["result"]["requests"].as_array().unwrap();
+            assert!(requests
+                .iter()
+                .all(|r| r["kind"] != "http.request" || r["method"] == "GET"));
+        }
     }
 
     #[test]
